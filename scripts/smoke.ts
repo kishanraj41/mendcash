@@ -1,24 +1,36 @@
 import { loadConfig } from "../src/config";
-import { credentialReport, formatCredentialReport } from "../src/ops/report";
+import { createFetchClient, PayPalApiError } from "../src/paypal/http";
+import { PayPalRest } from "../src/paypal/rest";
+import { credentialReport, formatCredentialReport, type CredentialLine } from "../src/ops/report";
+import { nodeTooOld } from "../src/runtime";
+
+export function smokePlan(lines: CredentialLine[]): { paypal: boolean; nebius: boolean; webhookMissing: boolean } {
+  const set = (name: CredentialLine["name"]) => lines.find((line) => line.name === name)?.state === "set";
+  return {
+    paypal: set("PAYPAL_CLIENT_ID") && set("PAYPAL_CLIENT_SECRET"),
+    nebius: set("NEBIUS_API_KEY"),
+    webhookMissing: !set("PAYPAL_WEBHOOK_ID"),
+  };
+}
 
 async function paypalAuth(): Promise<void> {
   const config = loadConfig();
-  const basic = Buffer.from(`${config.paypal.clientId}:${config.paypal.clientSecret}`).toString("base64");
-  const response = await fetch(`${config.paypal.baseUrl}/v1/oauth2/token`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basic}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body: "grant_type=client_credentials",
-  });
-  const body = (await response.json()) as { access_token?: string; expires_in?: number };
-  if (!response.ok || !body.access_token) {
-    console.log(`paypal_auth: fail http ${response.status}`);
-    throw new Error("PayPal auth failed");
+  const rest = new PayPalRest({ config, http: createFetchClient() });
+  await rest.accessToken();
+  console.log("paypal_auth: ok");
+  if (config.paypal.webhookId) {
+    try {
+      await rest.json("GET", `/v1/notifications/webhooks/${encodeURIComponent(config.paypal.webhookId)}`);
+      console.log("paypal_webhook: ok");
+    } catch (error) {
+      const status = error instanceof PayPalApiError ? error.status : 0;
+      console.log(`paypal_webhook: fail http ${status || "unknown"}`);
+      throw new Error("PayPal webhook id was not found");
+    }
+  } else {
+    console.log("paypal_webhook_id: missing (auth was still tested; status will refresh by polling)");
   }
-  console.log(`paypal_auth: ok expires_in=${body.expires_in ?? "unknown"}`);
+  console.log(config.paypal.merchantId ? "paypal_merchant_id: set" : "paypal_merchant_id: will read from the order");
 }
 
 async function nebiusAuth(): Promise<void> {
@@ -35,19 +47,47 @@ async function nebiusAuth(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const lines = credentialReport(process.env);
-  console.log(formatCredentialReport(lines));
-  if (lines.some((line) => line.state === "missing")) {
+  const tooOld = nodeTooOld();
+  if (tooOld) {
+    console.error(tooOld);
     console.log("FAIL");
     process.exit(1);
   }
-  await paypalAuth();
-  await nebiusAuth();
+  const lines = credentialReport(process.env);
+  console.log(formatCredentialReport(lines));
+  const plan = smokePlan(lines);
+  let failed = lines.some((line) => line.state === "missing");
+  if (plan.paypal) {
+    try {
+      await paypalAuth();
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "paypal auth failed");
+      failed = true;
+    }
+  } else {
+    console.log("paypal_auth: skipped (client id or secret missing)");
+  }
+  if (plan.nebius) {
+    try {
+      await nebiusAuth();
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "nebius auth failed");
+      failed = true;
+    }
+  } else {
+    console.log("nebius_auth: skipped (NEBIUS_API_KEY missing)");
+  }
+  if (failed) {
+    console.log("FAIL");
+    process.exit(1);
+  }
   console.log("OK");
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "smoke failed");
-  console.log("FAIL");
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : "smoke failed");
+    console.log("FAIL");
+    process.exit(1);
+  });
+}

@@ -36,6 +36,10 @@ export function App() {
 
   useEffect(() => {
     refreshLists().catch((err: Error) => setError(err.message));
+    const timer = window.setInterval(() => {
+      refreshLists().catch(() => undefined);
+    }, 12000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -54,8 +58,16 @@ export function App() {
       .finally(() => {
         if (!cancel) setLoadingCase(false);
       });
+    const timer = window.setInterval(() => {
+      api.case(selected, false)
+        .then((view) => {
+          if (!cancel) setCaseView(view);
+        })
+        .catch(() => undefined);
+    }, 8000);
     return () => {
       cancel = true;
+      window.clearInterval(timer);
     };
   }, [selected]);
 
@@ -69,13 +81,18 @@ export function App() {
         </div>
         <div className="top-actions">
           <div className="stake">
-            <span>Open stake</span>
-            <strong>${session?.atStakeUsd ?? "—"}</strong>
+            <span>Submitted</span>
+            <strong>${session?.submittedUsd ?? "—"}</strong>
+            <small>evidence sent, not resolved</small>
           </div>
           <div className="recovered">
             <span>Recovered</span>
             <strong>${session?.recoveredUsd ?? "—"}</strong>
-            <small>defended, not refunded</small>
+            <small>resolved for the seller</small>
+          </div>
+          <div className="stake">
+            <span>Open stake</span>
+            <strong>${session?.atStakeUsd ?? "—"}</strong>
           </div>
           <button className="primary" type="button" onClick={() => setSimulateOpen(true)}>
             Simulate a chargeback
@@ -85,6 +102,7 @@ export function App() {
       {session && (
         <div className="banner">
           {session.modeLabel} Daily model cap ${session.caps.maxDailyUsd.toFixed(2)}. Spent today ${session.spendTodayUsd}.
+          {session.mode === "live" && !session.webhooksConfigured ? " Webhooks are off, so status refreshes by polling." : ""}
         </div>
       )}
       {error && <p className="error" style={{ margin: 12 }}>{error}</p>}
@@ -97,7 +115,7 @@ export function App() {
           <div className="rows">
             {rows.map((row) => (
               <button key={row.disputeId} className={row.disputeId === selected ? "row active" : "row"} type="button" onClick={() => setSelected(row.disputeId)}>
-                <span>{prettyReason(row.reason)}</span>
+                <span>{row.claimLabel || prettyReason(row.reason)}</span>
                 <span className="amt">${row.amount ?? "—"}</span>
                 <span className="snip">{row.snippet || "No buyer text"}</span>
                 <span className="meta">{row.status.replaceAll("_", " ")} · {countdownText(row.countdown)}</span>
@@ -142,7 +160,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const deadline = view.figures.find((figure) => figure.key === "stake");
+  const stakeFigure = view.figures.find((figure) => figure.key === "stake");
 
   useEffect(() => {
     setCarrier(view.plan.tracking?.carrier || "UPS");
@@ -233,6 +251,9 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
             <>
               <h3>Draft</h3>
               <p className="meta">{view.draft.label}</p>
+              {view.draft.costUsd && (
+                <p className="meta">This read cost ${view.draft.costUsd} and took {(view.draft.latencyMs / 1000).toFixed(1)} s.</p>
+              )}
               <p className="draft">{view.draft.narrative}</p>
             </>
           )}
@@ -241,7 +262,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
             Ready to send: {view.plan.satisfiable.join(", ") || "notes only"}.
             Missing: {view.plan.missing.join(", ") || "nothing"}.
           </p>
-          <p className="meta">Amount at stake is {deadline?.value ?? "—"} from {deadline?.source}.</p>
+          <p className="meta">Amount at stake is {stakeFigure?.value ?? "—"} from {stakeFigure?.source}.</p>
           {view.timeline.length > 0 && (
             <div className="timeline">
               <h3>Timeline</h3>
@@ -265,7 +286,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
           </div>
           {action === "partial_refund" && (
             <label className="field">
-              Partial amount (USD)
+              Partial amount (USD). Capped at $200 and must be under the dispute amount. PayPal must list PARTIAL_REFUND or nothing is sent.
               <input value={partial} onChange={(event) => setPartial(event.target.value)} inputMode="decimal" />
             </label>
           )}
@@ -342,8 +363,8 @@ function Simulate({ catalog, replay, onClose, onFound }: { catalog: Catalog; rep
         </div>
         <p className="meta">
           {replay
-            ? "Replay. This does not call PayPal. A live sandbox chargeback usually takes about 40 seconds."
-            : "Sandbox simulation. MendCash places a card order, then raises a chargeback with the complaint you type. New disputes take about 40 seconds to appear. The deadline is simulated."}
+            ? "Replay. This does not call PayPal. A live sandbox chargeback usually takes about 40 seconds, then a few more minutes before 4853 becomes actionable."
+            : "Sandbox simulation. MendCash places a card order, then raises a chargeback. New disputes take about 40 seconds to appear. Use reason code 4853 if you want to answer it: other codes often stay under review in the sandbox. The deadline shown is PayPal's seller_response_due_date once it exists."}
         </p>
         <label className="field">
           Item
@@ -354,7 +375,11 @@ function Simulate({ catalog, replay, onClose, onFound }: { catalog: Catalog; rep
         <label className="field">
           Reason code
           <select value={reasonCode} onChange={(event) => setReasonCode(event.target.value)}>
-            {catalog.reasons.map((reason) => <option key={reason.code} value={reason.code}>{reason.code} · {reason.label}</option>)}
+            {catalog.reasons.map((reason) => (
+              <option key={reason.code} value={reason.code}>
+                {reason.code} · {reason.label}{reason.sandboxActionable ? "" : " · sandbox often stays under review"}
+              </option>
+            ))}
           </select>
         </label>
         <label className="field">

@@ -4,7 +4,11 @@ const PATTERNS: Array<{ id: string; re: RegExp }> = [
   { id: "disregard", re: /disregard (your |all )?(guidelines|rules|instructions)/i },
   { id: "you_are_now", re: /you are now/i },
   { id: "system_prompt", re: /system prompt/i },
-  { id: "tool_or_large_refund", re: /\b(accept[-_ ]claim|provide[-_ ]evidence|refund\s+\$?\d{3,})\b/i },
+  { id: "system_note", re: /system\s+note/i },
+  { id: "approve_refund", re: /approve\s+(a\s+)?refund/i },
+  { id: "refund_of_amount", re: /refund\s+of\s+\$?\s?\d{3,}/i },
+  { id: "owed_large", re: /\bowed\s+\$?\s?\d{3,}/i },
+  { id: "tool_or_large_refund", re: /\b(accept[-_ ]claim|provide[-_ ]evidence|refund\s+\$?\s?\d{3,})\b/i },
 ];
 
 export type InjectionHit = { detected: boolean; patterns: string[] };
