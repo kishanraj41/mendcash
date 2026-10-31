@@ -5,7 +5,7 @@ import { cardOrderBody, processChargebackBody } from "../src/paypal/chargeback";
 import { createFetchClient, PayPalApiError } from "../src/paypal/http";
 import { MISSING_MERCHANT_ID, orderWithMerchant } from "../src/paypal/merchant";
 import { PayPalRest } from "../src/paypal/rest";
-import { nodeTooOld } from "../src/runtime";
+import { loadLocalEnv, nodeTooOld } from "../src/runtime";
 import { CATALOG } from "../src/scenario/catalog";
 import { buildScenario, stableStringify } from "../src/scenario/planted";
 
@@ -116,6 +116,7 @@ async function liveSeed(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  loadLocalEnv();
   const tooOld = nodeTooOld();
   if (tooOld) throw new Error(tooOld);
   const offline = writeOffline();

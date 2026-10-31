@@ -2,7 +2,7 @@ import { loadConfig } from "../src/config";
 import { createFetchClient, PayPalApiError } from "../src/paypal/http";
 import { PayPalRest } from "../src/paypal/rest";
 import { credentialReport, formatCredentialReport, type CredentialLine } from "../src/ops/report";
-import { nodeTooOld } from "../src/runtime";
+import { loadLocalEnv, nodeTooOld } from "../src/runtime";
 
 export function smokePlan(lines: CredentialLine[]): { paypal: boolean; nebius: boolean; webhookMissing: boolean } {
   const set = (name: CredentialLine["name"]) => lines.find((line) => line.name === name)?.state === "set";
@@ -53,6 +53,7 @@ async function nebiusAuth(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  loadLocalEnv();
   const tooOld = nodeTooOld();
   if (tooOld) {
     console.error(tooOld);

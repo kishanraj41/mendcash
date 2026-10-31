@@ -7,6 +7,7 @@ import { loadConfig } from "../src/config";
 import { RECORDED_AGENT_USAGE, RECORDED_ROUTER_USAGE, formatUsdAmount, priceMicroUsd } from "../src/money/cost";
 import { computeFigures } from "../src/money/engine";
 import { buildScenario, stableStringify } from "../src/scenario/planted";
+import { loadLocalEnv } from "../src/runtime";
 import { Desk } from "../src/services/desk";
 import { recompute } from "./recompute";
 
@@ -110,6 +111,7 @@ function normalizeMoney(amount: string): string {
 }
 
 async function main(): Promise<void> {
+  loadLocalEnv();
   if (process.argv.includes("--live")) {
     await liveEval();
     return;

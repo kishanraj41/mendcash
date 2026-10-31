@@ -68,7 +68,7 @@ export function App() {
     setLoadingCase(true);
     api.case(selected)
       .then((view) => {
-        if (!cancel) setCaseView(view);
+        if (!cancel) showCase(view);
         api.session().then((next) => {
           if (!cancel) setSession(next);
         }).catch(() => undefined);
@@ -80,7 +80,7 @@ export function App() {
     const timer = window.setInterval(() => {
       api.case(selected, false)
         .then((view) => {
-          if (!cancel) setCaseView(view);
+          if (!cancel) showCase(view);
         })
         .catch(() => undefined);
     }, 8000);
@@ -89,6 +89,19 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [selected]);
+
+  function showCase(view: CaseView) {
+    setCaseView(view);
+    setRows((current) => current.map((row) => row.disputeId === view.dispute.dispute_id
+      ? {
+          ...row,
+          status: view.dispute.status,
+          claimLabel: view.claimLabel,
+          pending: view.buyerPending,
+          snippet: view.buyerPending ? "Waiting for PayPal to deliver buyer details…" : (view.buyerText || row.snippet).slice(0, 110),
+        }
+      : row));
+  }
 
   return (
     <div className="app">
@@ -152,7 +165,7 @@ export function App() {
             </div>
           )}
           {selected && loadingCase && <p className="meta">Reading the dispute…</p>}
-          {caseView && <CasePane view={caseView} onChanged={() => { refreshLists().catch((err: Error) => setError(err.message)); api.case(caseView.dispute.dispute_id).then(setCaseView).catch((err: Error) => setError(err.message)); }} />}
+          {caseView && <CasePane view={caseView} onChanged={() => { refreshLists().catch((err: Error) => setError(err.message)); api.case(caseView.dispute.dispute_id).then((view) => showCase(view)).catch((err: Error) => setError(err.message)); }} />}
         </main>
       </div>
       {simulateOpen && catalog && (
@@ -184,15 +197,21 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
   const [result, setResult] = useState<string | null>(null);
   const [sentAction, setSentAction] = useState<Action | null>(null);
   const [busy, setBusy] = useState(false);
+  const submittedAction = useRef<Action | null>(null);
   const stakeFigure = view.figures.find((figure) => figure.key === "stake");
 
   useEffect(() => {
     setCarrier(view.plan.tracking?.carrier || "UPS");
     setTracking(view.plan.tracking?.number || "");
+  }, [view.dispute.dispute_id, view.plan.tracking?.carrier, view.plan.tracking?.number]);
+
+  useEffect(() => {
+    submittedAction.current = null;
     setResult(null);
     setSentAction(null);
     setReviewing(false);
-  }, [view.dispute.dispute_id, view.plan.tracking?.carrier, view.plan.tracking?.number]);
+    setPayload(null);
+  }, [view.dispute.dispute_id]);
 
   const body = useMemo(() => {
     const fields: Record<string, string> = { action };
@@ -206,9 +225,18 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
 
   useEffect(() => {
     let cancel = false;
+    if (submittedAction.current === action) setPayload(null);
     api.preview(view.dispute.dispute_id, body)
       .then((res) => {
         if (cancel) return;
+        if (submittedAction.current === action) {
+          setPayload(null);
+          setReadOnly(null);
+          setWaiting(false);
+          setReviewing(true);
+          setPreviewError(null);
+          return;
+        }
         if (res.readOnly) {
           setPayload(null);
           setReadOnly(res.message || "Read only. This dispute was not created in this demo.");
@@ -255,7 +283,12 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
     setResult(null);
     try {
       const approved = await api.approve(view.dispute.dispute_id, body);
+      submittedAction.current = action;
       setSentAction(action);
+      setPayload(null);
+      setReviewing(true);
+      setWaiting(false);
+      setPreviewError(null);
       setResult(approved.replay ? "Approved in replay. PayPal was not called." : "Approved and sent to the PayPal sandbox.");
       onChanged();
     } catch (err) {
@@ -298,9 +331,9 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
       <div className="split">
         <section className="panel">
           <h3>What the buyer wrote</h3>
-          <div className="buyer">{view.buyerText || "No buyer text on this dispute."}</div>
+          <div className="buyer">{view.buyerPending ? "Waiting for PayPal to deliver buyer details…" : (view.buyerText || "No buyer text on this dispute.")}</div>
           {view.capError && <p className="error">{view.capError} The figures above still come from PayPal records.</p>}
-          {view.draft && (
+          {view.draft && !view.buyerPending && (
             <>
               <h3>Draft</h3>
               <p className="meta">{view.draft.label}</p>
@@ -368,7 +401,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
           ) : previewError ? (
             <p className="error">{previewError}</p>
           ) : null}
-          {payload && (
+          {payload && sentAction !== action && !reviewing && (
             <>
               <p className="path">{payload.method} {payload.path}</p>
               <p className="path">{payload.contentType} · PayPal-Request-Id {payload.requestId}</p>
