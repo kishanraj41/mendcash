@@ -151,7 +151,5 @@ export function modeLabel(config: AppConfig): string {
   if (config.mode === "replay") {
     return "Replay — not a live PayPal call. Disputes are fixtures.";
   }
-  return config.sandbox
-    ? "PayPal sandbox. Deadlines on simulated chargebacks are labeled simulated."
-    : "PayPal live API.";
+  return config.sandbox ? "PayPal sandbox." : "PayPal live API.";
 }

@@ -10,6 +10,8 @@ export type ReaderInput = {
   messages?: Array<{ posted_by?: string; content?: string }>;
 };
 
+export type UsageSegment = { model: string; usage: TokenUsage };
+
 export type ReaderResult = {
   claimClass: ClaimClass;
   claimLabel: string;
@@ -21,6 +23,7 @@ export type ReaderResult = {
   usageSource: "model" | "recorded" | "rules";
   usage: TokenUsage;
   routerUsage: TokenUsage;
+  segments?: UsageSegment[];
   latencyMs: number;
 };
 
@@ -120,22 +123,19 @@ export async function readWithModel(input: ReaderInput, client: ChatClient, conf
       content: `PayPal reason code: ${input.reason || "UNKNOWN"}\n<buyer_message>\n${buyerText}\n</buyer_message>`,
     },
   ];
+  const segments: UsageSegment[] = [];
   let model = config.nebius.agentModel;
-  let usage = { prompt_tokens: 0, completion_tokens: 0 };
   let content = "";
   try {
     const primary = await client(config.nebius.agentModel, messages);
+    segments.push({ model: config.nebius.agentModel, usage: primary.usage });
     content = primary.content;
-    usage = primary.usage;
     JSON.parse(content);
   } catch {
     model = config.nebius.fallbackModel;
     const fallback = await client(config.nebius.fallbackModel, messages);
+    segments.push({ model: config.nebius.fallbackModel, usage: fallback.usage });
     content = fallback.content;
-    usage = {
-      prompt_tokens: usage.prompt_tokens + fallback.usage.prompt_tokens,
-      completion_tokens: usage.completion_tokens + fallback.usage.completion_tokens,
-    };
   }
   const reconciled = reconcileModel(input.reason, buyerText, content);
   const router = await client(config.nebius.routerModel, [
@@ -156,8 +156,9 @@ export async function readWithModel(input: ReaderInput, client: ChatClient, conf
       : reconciled.narrative,
     model,
     usageSource: "model",
-    usage,
+    usage: segments.find((segment) => segment.model === model)?.usage || { prompt_tokens: 0, completion_tokens: 0 },
     routerUsage: router.usage,
+    segments: [...segments, { model: config.nebius.routerModel, usage: router.usage }],
     latencyMs: Date.now() - started,
   };
 }
