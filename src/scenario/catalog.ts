@@ -9,6 +9,7 @@ export type ReasonOption = {
   code: string;
   reason: string;
   label: string;
+  sandboxActionable: boolean;
 };
 
 export const CATALOG: CatalogItem[] = [
@@ -19,11 +20,11 @@ export const CATALOG: CatalogItem[] = [
   { id: "mug", title: "Enamel mug", amount: "32.50", kind: "physical" },
 ];
 
-/** Reason codes exercised in the Oct 31 sandbox log: 4853, 4855, 4837. */
+/** 4853 is the sandbox code that becomes WAITING_FOR_SELLER_RESPONSE. The others often stay under review. */
 export const REASON_OPTIONS: ReasonOption[] = [
-  { code: "4853", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED", label: "Not as described" },
-  { code: "4855", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", label: "Not received" },
-  { code: "4837", reason: "OTHER", label: "Other / unauthorized" },
+  { code: "4853", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED", label: "Not as described", sandboxActionable: true },
+  { code: "4855", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", label: "Not received", sandboxActionable: false },
+  { code: "4837", reason: "OTHER", label: "Other / unauthorized", sandboxActionable: false },
 ];
 
 export function reasonByCode(code: string): ReasonOption | undefined {

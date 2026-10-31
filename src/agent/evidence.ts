@@ -44,10 +44,38 @@ export function orderTracking(order: {
   };
 }
 
+function moneyKey(value: string | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return trimmed;
+  const [dollars, fraction = ""] = trimmed.split(".");
+  return `${Number(dollars)}.${(fraction + "00").slice(0, 2)}`;
+}
+
+/**
+ * A chargeback hold shows up on the order as payments.refunds for the held net.
+ * That is not a merchant refund and must not become PROOF_OF_REFUND.
+ */
 export function refundIdOf(order: {
-  purchase_units?: Array<{ payments?: { refunds?: Array<{ id?: string }> } }>;
-} | null, dispute?: { extensions?: { mendcash_refund_id?: string } }): string | null {
-  return order?.purchase_units?.[0]?.payments?.refunds?.[0]?.id || dispute?.extensions?.mendcash_refund_id || null;
+  purchase_units?: Array<{ payments?: { refunds?: Array<{ id?: string; amount?: { value?: string } }> } }>;
+} | null, dispute?: {
+  extensions?: { mendcash_refund_id?: string };
+  fund_movements?: Array<{ type?: string; reason?: string; amount?: { value?: string } }>;
+}): string | null {
+  if (dispute?.extensions?.mendcash_refund_id) return dispute.extensions.mendcash_refund_id;
+  const holds = new Set(
+    (dispute?.fund_movements || [])
+      .filter((row) => row.type === "DEBIT" && row.reason === "HOLD_PLACED")
+      .map((row) => moneyKey(row.amount?.value))
+      .filter((value): value is string => Boolean(value)),
+  );
+  for (const refund of order?.purchase_units?.[0]?.payments?.refunds || []) {
+    if (!refund.id) continue;
+    const key = moneyKey(refund.amount?.value);
+    if (key && holds.has(key)) continue;
+    return refund.id;
+  }
+  return null;
 }
 
 export function planEvidence(

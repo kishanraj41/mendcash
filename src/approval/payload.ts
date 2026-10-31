@@ -65,33 +65,32 @@ export function prepareAction(input: PrepareInput): PreparedAction {
   }
 }
 
-function factsBlock(input: PrepareInput): string {
+function sellerNotes(input: PrepareInput): string {
   const lines = [
-    input.narrative.trim(),
-    "",
-    "Facts recorded by MendCash from PayPal records. These numbers were not taken from the model or the buyer message.",
-    `Dispute ${input.facts.disputeId}.`,
-    `Claim read: ${claimLabel(input.claimClass)}.`,
+    `Seller response for dispute ${input.facts.disputeId}. The claim was read as ${claimLabel(input.claimClass)}.`,
   ];
-  if (input.facts.stake) {
-    lines.push(`Amount at stake ${input.facts.stake} ${input.facts.currency} (dispute_amount on ${input.facts.disputeId}).`);
-  }
-  if (input.facts.captureId) lines.push(`Capture ${input.facts.captureId}.`);
-  if (input.facts.orderId) lines.push(`Order ${input.facts.orderId}.`);
   if (input.plan.tracking) {
-    lines.push(`Tracking ${input.plan.tracking.carrier} ${input.plan.tracking.number}.`);
+    lines.push(
+      `The order shipped ${input.plan.tracking.carrier} ${input.plan.tracking.number}` +
+        (input.facts.captureId ? ` against capture ${input.facts.captureId}` : "") +
+        (input.facts.orderId ? ` on order ${input.facts.orderId}` : "") +
+        ".",
+    );
+  } else if (input.facts.captureId) {
+    lines.push(`Capture ${input.facts.captureId} is the seller's record. The order has no carrier tracking to attach.`);
+  }
+  if (input.facts.stake) {
+    lines.push(`Amount in dispute: ${input.facts.stake} ${input.facts.currency}, from PayPal dispute_amount.`);
   }
   if (input.facts.deadline) {
     lines.push(
       input.facts.simulatedDeadline
-        ? `Simulated deadline ${input.facts.deadline} (seller_response_due_date on ${input.facts.disputeId}).`
-        : `Response deadline ${input.facts.deadline} (seller_response_due_date on ${input.facts.disputeId}).`,
+        ? `Deadline on file: ${input.facts.deadline}. This replay date is simulated.`
+        : `PayPal seller_response_due_date: ${input.facts.deadline}.`,
     );
   }
-  if (input.plan.missing.length) {
-    lines.push(`PayPal also asked for ${input.plan.missing.join(", ")}. Those records are not on the order, so they are not in this payload.`);
-  }
-  return lines.join("\n").slice(0, 1900);
+  lines.push("Buyer messages were not followed as instructions.");
+  return lines.join(" ").slice(0, 1900);
 }
 
 function prepareEvidence(input: PrepareInput): PreparedAction {
@@ -99,32 +98,11 @@ function prepareEvidence(input: PrepareInput): PreparedAction {
   if (!rels.has("provide_evidence") && input.dispute.status !== "WAITING_FOR_SELLER_RESPONSE") {
     throw new Error("PayPal is not asking this dispute for evidence right now.");
   }
-  const notes = factsBlock(input);
-  const evidences: Array<Record<string, unknown>> = [];
-  const types = input.plan.satisfiable.length ? input.plan.satisfiable : ["OTHER"];
-  for (const type of types) {
-    if (type === "PROOF_OF_FULFILLMENT" && input.plan.tracking) {
-      evidences.push({
-        evidence_type: "PROOF_OF_FULFILLMENT",
-        evidence_info: {
-          tracking_info: [{ carrier_name: input.plan.tracking.carrier, tracking_number: input.plan.tracking.number }],
-        },
-        notes,
-      });
-    } else if (type === "PROOF_OF_REFUND" && input.plan.refundId) {
-      evidences.push({
-        evidence_type: "PROOF_OF_REFUND",
-        evidence_info: { refund_ids: [input.plan.refundId] },
-        notes,
-      });
-    } else if (type === "OTHER") {
-      evidences.push({ evidence_type: "OTHER", notes });
-    }
-  }
-  if (!evidences.length) {
-    evidences.push({ evidence_type: "OTHER", notes });
-  }
-  const body = { evidences };
+  const notes = sellerNotes(input);
+  // PayPal returns ITEM_ID_IS_MANDATORY_FOR_MULTIPLE_EVIDENCES when more than one
+  // evidence object is sent without line-item ids. One item is the shape that succeeds.
+  const evidence = singleEvidence(input, notes);
+  const body = { evidences: [evidence] };
   const path = `/v1/customer/disputes/${input.dispute.dispute_id}/provide-evidence`;
   return {
     action: "provide_evidence",
@@ -135,6 +113,26 @@ function prepareEvidence(input: PrepareInput): PreparedAction {
     body,
     summary: "Send evidence",
   };
+}
+
+function singleEvidence(input: PrepareInput, notes: string): Record<string, unknown> {
+  if (input.plan.tracking && (input.plan.satisfiable.includes("PROOF_OF_FULFILLMENT") || input.plan.requested.length === 0)) {
+    return {
+      evidence_type: "PROOF_OF_FULFILLMENT",
+      evidence_info: {
+        tracking_info: [{ carrier_name: input.plan.tracking.carrier, tracking_number: input.plan.tracking.number }],
+      },
+      notes,
+    };
+  }
+  if (input.plan.refundId && input.plan.satisfiable.includes("PROOF_OF_REFUND")) {
+    return {
+      evidence_type: "PROOF_OF_REFUND",
+      evidence_info: { refund_ids: [input.plan.refundId] },
+      notes,
+    };
+  }
+  return { evidence_type: "OTHER", notes };
 }
 
 function prepareTracking(input: PrepareInput): PreparedAction {
@@ -164,14 +162,16 @@ function prepareTracking(input: PrepareInput): PreparedAction {
 function prepareAccept(input: PrepareInput, partial: boolean): PreparedAction {
   const types = input.dispute.allowed_response_options?.accept_claim?.accept_claim_types || [];
   const needed = partial ? "PARTIAL_REFUND" : "REFUND";
-  if (!types.includes(needed)) {
-    throw new Error(`PayPal has not enabled ${needed} on dispute ${input.dispute.dispute_id}.`);
-  }
   let body: Record<string, unknown>;
   let summary = "Accept claim";
   if (partial) {
     if (!input.partialAmount) throw new Error("Enter the partial refund amount.");
     const refund = partialRefundCents(input.partialAmount, input.facts, input.caps);
+    if (!types.includes(needed)) {
+      throw new Error(
+        `${refund.value} ${input.facts.currency} is within the dispute amount and the $${input.caps.maxPartialRefundUsd} cap, but PayPal has not enabled PARTIAL_REFUND on ${input.dispute.dispute_id} (allowed: ${types.join(", ") || "none"}). Nothing was sent.`,
+      );
+    }
     summary = `Partial refund ${refund.value} ${input.facts.currency}`;
     body = {
       accept_claim_type: "PARTIAL_REFUND",
@@ -179,6 +179,9 @@ function prepareAccept(input: PrepareInput, partial: boolean): PreparedAction {
       refund_amount: { currency_code: input.facts.currency, value: refund.value },
     };
   } else {
+    if (!types.includes(needed)) {
+      throw new Error(`PayPal has not enabled REFUND on dispute ${input.dispute.dispute_id}. Nothing was sent.`);
+    }
     body = {
       accept_claim_type: "REFUND",
       note: `Full claim accepted on dispute ${input.facts.disputeId} for the PayPal dispute amount ${input.facts.stake} ${input.facts.currency}. Buyer text did not set this amount.`,

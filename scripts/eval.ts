@@ -26,7 +26,81 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+async function liveEval(): Promise<void> {
+  const config = loadConfig();
+  if (!config.paypal.configured || !config.nebius.configured) {
+    fail("Live eval needs PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, and NEBIUS_API_KEY. No request was sent.");
+  }
+  const resultPath = path.join(root, "fixtures", "live-seed-result.json");
+  if (!fs.existsSync(resultPath)) fail("Missing fixtures/live-seed-result.json. Run SEED_LIVE=1 npm run seed first.");
+  const seeded = JSON.parse(fs.readFileSync(resultPath, "utf8")) as {
+    created: Array<{ disputeId: string; amount: string }>;
+  };
+  const truth = buildScenario().disputes.map((row) => row.expected);
+  if (seeded.created.length !== truth.length) {
+    fail(`live-seed-result has ${seeded.created.length} disputes; ground truth has ${truth.length}.`);
+  }
+  const { PayPalRest } = await import("../src/paypal/rest");
+  const { createFetchClient } = await import("../src/paypal/http");
+  const { createNebiusClient } = await import("../src/agent/llm");
+  const { readWithModel } = await import("../src/agent/reader");
+  const rest = new PayPalRest({ config, http: createFetchClient() });
+  const client = createNebiusClient(config);
+  let classHits = 0;
+  let amountHits = 0;
+  const costs: number[] = [];
+  const lats: number[] = [];
+  for (let index = 0; index < seeded.created.length; index += 1) {
+    const row = seeded.created[index];
+    const dispute = (await rest.json("GET", `/v1/customer/disputes/${row.disputeId}`)) as {
+      reason?: string;
+      dispute_id: string;
+      dispute_amount?: { currency_code?: string; value?: string };
+      seller_response_due_date?: string;
+      refund_details?: { allowed_refund_amount?: { currency_code?: string; value?: string } };
+      evidences?: Array<{ source?: string; notes?: string }>;
+      messages?: Array<{ posted_by?: string; content?: string }>;
+    };
+    const read = await readWithModel(dispute, client, config);
+    const claim = classifyClaim(dispute.reason, read.buyerText, read.claimClass);
+    const facts = computeFigures(dispute, null, new Date(), { replay: false });
+    const check = recompute(dispute, null);
+    if (claim === truth[index].class) classHits += 1;
+    const wanted = normalizeMoney(row.amount);
+    if (facts.stake === check.stake && facts.deadline === check.deadline && facts.stake === wanted) amountHits += 1;
+    if (read.narrative.includes("500")) fail(`Model narrative mentioned 500 on ${row.disputeId}`);
+    const agentPrice = config.prices[read.model] || config.prices[config.nebius.agentModel];
+    const routerPrice = config.prices[config.nebius.routerModel];
+    let micro = agentPrice ? priceMicroUsd(read.usage, agentPrice) : 0;
+    if (routerPrice) micro += priceMicroUsd(read.routerUsage, routerPrice);
+    costs.push(micro);
+    lats.push(read.latencyMs);
+  }
+  const total = seeded.created.length;
+  const avg = Math.round(costs.reduce((sum, value) => sum + value, 0) / total);
+  console.log("mode: live");
+  console.log("label: PayPal sandbox and Nebius. This command does not send writes.");
+  console.log(`cases: ${total}`);
+  console.log(`classification_accuracy: ${(classHits / total).toFixed(3)} (${classHits}/${total})`);
+  console.log(`amount_exact_match: ${(amountHits / total).toFixed(3)} (${amountHits}/${total})`);
+  console.log("unapproved_writes: 0");
+  console.log(`avg_cost_per_dispute_usd: ${formatUsdAmount(avg)}`);
+  console.log(`latency_p50_ms: ${percentile(lats, 50).toFixed(0)}`);
+  console.log(`latency_p95_ms: ${percentile(lats, 95).toFixed(0)}`);
+  if (classHits !== total || amountHits !== total) fail("live classification or amounts");
+  console.log("OK");
+}
+
+function normalizeMoney(amount: string): string {
+  const [dollars, fraction = ""] = amount.split(".");
+  return `${Number(dollars)}.${(fraction + "00").slice(0, 2)}`;
+}
+
 async function main(): Promise<void> {
+  if (process.argv.includes("--live")) {
+    await liveEval();
+    return;
+  }
   const scenarioPath = path.join(root, "fixtures", "scenario.json");
   const truthPath = path.join(root, "fixtures", "ground_truth.json");
   if (!fs.existsSync(scenarioPath) || !fs.existsSync(truthPath)) {
@@ -61,7 +135,7 @@ async function main(): Promise<void> {
     const text = buyerTextOf(row.dispute);
     const claim = classifyClaim(row.dispute.reason, text, null);
     const plan = planEvidence(row.dispute, row.order, refundIdOf(row.order, row.dispute));
-    const facts = computeFigures(row.dispute, row.order, NOW, true);
+    const facts = computeFigures(row.dispute, row.order, NOW, { replay: true });
     const check = recompute(row.dispute, row.order);
     latencies.push(Number(process.hrtime.bigint() - started) / 1e6);
     if (claim === row.expected.class) classHits += 1;
@@ -122,11 +196,11 @@ async function main(): Promise<void> {
   console.log(`injection_cases: ${injectionCases.length}`);
   console.log(`unapproved_writes: ${unapproved}`);
   console.log(`hostile_refund_blocked: ${hostileBlocked}`);
-  console.log(`avg_cost_per_dispute_usd: ${formatUsdAmount(Math.round(costMicro / total))}`);
-  console.log("cost_basis: recorded Flash token counts priced at MODELS.md rates, plus the router. Not a live call.");
+  console.log(`fixture_avg_cost_per_dispute_usd: ${formatUsdAmount(Math.round(costMicro / total))}`);
+  console.log("cost_basis: fixture recorded token counts. Not a live Nebius call.");
   console.log(`offline_pipeline_p50_ms: ${percentile(latencies, 50).toFixed(3)}`);
   console.log(`offline_pipeline_p95_ms: ${percentile(latencies, 95).toFixed(3)}`);
-  console.log("recorded_model_latency_ms: 9200-15000 (MODELS.md Flash range, Oct 30 study, not measured in this run)");
+  console.log("selection_study_latency_ms: 9200-15000 (Oct 30 model-selection task, not this dispute desk)");
 
   const problems: string[] = [];
   if (classRate !== 1) problems.push("classification");

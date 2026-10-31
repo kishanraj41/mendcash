@@ -1,5 +1,7 @@
 import type { AppConfig } from "../config";
-import { createFetchClient, parseJson, PayPalApiError, type HttpClient } from "./http";
+import { createFetchClient, formatPayPalError, parseJson, PayPalApiError, type HttpClient } from "./http";
+
+export { PayPalApiError };
 
 export type PayPalRestOptions = {
   config: AppConfig;
@@ -38,7 +40,8 @@ export class PayPalRest {
     });
     const body = parseJson(response.body) as { access_token?: string; expires_in?: number };
     if (response.status !== 200 || !body?.access_token) {
-      throw new PayPalApiError("PayPal auth failed", response.status, debugId(body));
+      const formatted = formatPayPalError("POST", "/v1/oauth2/token", response.status, body);
+      throw new PayPalApiError(formatted.message, response.status, formatted.debugId);
     }
     this.token = {
       value: body.access_token,
@@ -62,7 +65,8 @@ export class PayPalRest {
     const response = await this.http({ method, url: `${this.baseUrl}${path}`, headers, body: payload });
     const parsed = safeParse(response.body);
     if (response.status >= 400) {
-      throw new PayPalApiError(`PayPal ${method} ${path} failed (${response.status})`, response.status, debugId(parsed));
+      const formatted = formatPayPalError(method, path, response.status, parsed);
+      throw new PayPalApiError(formatted.message, response.status, formatted.debugId);
     }
     return parsed;
   }
@@ -83,7 +87,8 @@ export class PayPalRest {
     });
     const parsed = safeParse(response.body);
     if (response.status >= 400) {
-      throw new PayPalApiError(`PayPal POST ${path} failed (${response.status})`, response.status, debugId(parsed));
+      const formatted = formatPayPalError("POST", path, response.status, parsed);
+      throw new PayPalApiError(formatted.message, response.status, formatted.debugId);
     }
     return parsed;
   }
@@ -95,14 +100,6 @@ function safeParse(body: string): unknown {
   } catch {
     return { raw: body.slice(0, 200) };
   }
-}
-
-function debugId(body: unknown): string | null {
-  if (body && typeof body === "object" && "debug_id" in body) {
-    const id = (body as { debug_id?: unknown }).debug_id;
-    return typeof id === "string" ? id : null;
-  }
-  return null;
 }
 
 export function encodeMultipart(json: string): { contentType: string; body: string } {

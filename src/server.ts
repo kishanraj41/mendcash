@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
 import fs from "fs";
 import path from "path";
@@ -5,6 +6,7 @@ import { loadConfig, type AppConfig } from "./config";
 import { CapError } from "./caps/limiter";
 import { Desk } from "./services/desk";
 import type { ActionName } from "./approval/payload";
+import { nodeTooOld } from "./runtime";
 
 const ACTIONS = new Set<ActionName>([
   "provide_evidence",
@@ -24,6 +26,7 @@ export type AppOptions = {
 export function createApp(options: AppOptions = {}) {
   const config = options.config || loadConfig();
   const desk = options.desk || new Desk(config, options.now);
+  const sessions = new Map<string, string>();
   const app = express();
   app.disable("x-powered-by");
   if (config.trustProxy) app.set("trust proxy", 1);
@@ -37,6 +40,12 @@ export function createApp(options: AppOptions = {}) {
 
   app.post("/webhooks/paypal", express.raw({ type: "application/json", limit: "1mb" }), async (req, res, next) => {
     try {
+      if (config.mode === "live" && !config.paypal.webhookId) {
+        res.status(503).json({
+          error: "PAYPAL_WEBHOOK_ID is not set. Unsigned events are rejected. The inbox still polls PayPal.",
+        });
+        return;
+      }
       const raw = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
       const event = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
       const replayHeader = req.header("x-mendcash-replay") === "1";
@@ -50,10 +59,11 @@ export function createApp(options: AppOptions = {}) {
 
   app.use(express.json({ limit: "1mb" }));
 
-  app.get("/api/session", async (_req, res, next) => {
+  app.get("/api/session", async (req, res, next) => {
     try {
+      const csrfToken = ensureSession(req, res, sessions);
       const session = desk.session();
-      res.json({ ...session, atStakeUsd: await desk.atStakeUsd() });
+      res.json({ ...session, csrfToken, atStakeUsd: await desk.atStakeUsd() });
     } catch (error) {
       next(error);
     }
@@ -80,10 +90,11 @@ export function createApp(options: AppOptions = {}) {
     }
   });
 
-  app.post("/api/disputes/:id/preview", (req, res, next) => {
+  app.post("/api/disputes/:id/preview", async (req, res, next) => {
     try {
+      requireCsrf(req, sessions);
       const action = actionOf(req.body?.action);
-      const prepared = desk.preview(req.params.id, action, fieldsOf(req.body));
+      const prepared = await desk.preview(req.params.id, action, fieldsOf(req.body));
       res.json({ replay: config.mode === "replay", payload: prepared });
     } catch (error) {
       next(error);
@@ -92,12 +103,13 @@ export function createApp(options: AppOptions = {}) {
 
   app.post("/api/disputes/:id/approve", async (req, res, next) => {
     try {
+      requireCsrf(req, sessions);
       const action = actionOf(req.body?.action);
       if (action === "send_invoice_reminder" || action === "create_early_payment_discount") {
         res.json(await desk.approveInvoice(req.params.id, action));
         return;
       }
-      res.json(await desk.approve(req.params.id, action, fieldsOf(req.body)));
+      res.json(await desk.approve(req.params.id, action, fieldsOf(req.body), clientIp(req)));
     } catch (error) {
       next(error);
     }
@@ -105,6 +117,7 @@ export function createApp(options: AppOptions = {}) {
 
   app.post("/api/simulate", async (req, res, next) => {
     try {
+      requireCsrf(req, sessions);
       const started = desk.simulate(
         {
           itemId: String(req.body?.itemId || ""),
@@ -150,7 +163,7 @@ export function createApp(options: AppOptions = {}) {
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const message = error instanceof Error ? error.message : "Request failed.";
-    const status = error instanceof CapError ? 429 : /not found/i.test(message) ? 404 : /signature|rejected/i.test(message) ? 401 : 400;
+    const status = error instanceof CapError ? 429 : /not found/i.test(message) ? 404 : /signature|rejected|session token/i.test(message) ? 401 : 400;
     res.status(status).json({ error: message });
   });
 
@@ -159,6 +172,32 @@ export function createApp(options: AppOptions = {}) {
 
 function clientIp(req: Request): string {
   return req.ip || "unknown";
+}
+
+function readCookie(req: Request, name: string): string {
+  const raw = req.header("cookie") || "";
+  const part = raw.split(";").map((piece) => piece.trim()).find((piece) => piece.startsWith(`${name}=`));
+  return part ? decodeURIComponent(part.slice(name.length + 1)) : "";
+}
+
+function ensureSession(req: Request, res: Response, sessions: Map<string, string>): string {
+  let sid = readCookie(req, "mendcash_sid");
+  let csrf = sid ? sessions.get(sid) : undefined;
+  if (!sid || !csrf) {
+    sid = randomBytes(16).toString("hex");
+    csrf = randomBytes(16).toString("hex");
+    sessions.set(sid, csrf);
+    res.setHeader("Set-Cookie", `mendcash_sid=${sid}; HttpOnly; SameSite=Lax; Path=/`);
+  }
+  return csrf;
+}
+
+function requireCsrf(req: Request, sessions: Map<string, string>): void {
+  const sid = readCookie(req, "mendcash_sid");
+  const csrf = sid ? sessions.get(sid) : undefined;
+  if (!csrf || req.header("x-mendcash-csrf") !== csrf) {
+    throw new Error("Missing session token. Reload the page.");
+  }
 }
 
 function actionOf(value: unknown): ActionName {
@@ -186,7 +225,15 @@ function paypalHeaders(req: Request): Record<string, string | undefined> {
 }
 
 function main(): void {
+  const tooOld = nodeTooOld();
+  if (tooOld) {
+    console.error(tooOld);
+    process.exit(1);
+  }
   const config = loadConfig();
+  if (config.mode === "live" && !config.paypal.webhookId) {
+    console.warn("PAYPAL_WEBHOOK_ID is not set. Dispute status will refresh by polling, not by webhook.");
+  }
   if (config.mode === "live" && !config.paypal.configured) {
     console.error("MENDCASH_MODE=live but PAYPAL_CLIENT_ID or PAYPAL_CLIENT_SECRET is missing.");
     process.exit(1);

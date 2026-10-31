@@ -12,10 +12,10 @@ Mastercard’s 2025 estimate is that a chargeback costs a merchant **$128 on ave
 
 1. Open the app. No login.
 2. Click **Simulate a chargeback**, pick an item, pick a reason code, and type a complaint.
-3. MendCash places a sandbox card order (`POST /v2/checkout/orders` with `payment_source.card`) and raises a sandbox chargeback (`POST /v2/customer-support/process-chargeback`). New disputes take about 40 seconds to show up. The screen keeps a progress log. The deadline is labeled **simulated** because the sandbox due date follows the `response_date` we send.
+3. MendCash places a sandbox card order (`POST /v2/checkout/orders` with `payment_source.card`, `Prefer: return=representation`) and raises a sandbox chargeback (`POST /v2/customer-support/process-chargeback`). New disputes take about 40 seconds to show up. The screen keeps a progress log and keeps polling PayPal until the status changes. Reason code **4853** is the one that becomes actionable in the sandbox. Once PayPal sends `seller_response_due_date`, that date is shown as PayPal's deadline. Replay mode still labels its fixture deadlines simulated.
 4. The inbox also fills from `CUSTOMER.DISPUTE.CREATED` and `CUSTOMER.DISPUTE.UPDATED` webhooks. If an event is late, the inbox polls disputes directly.
 5. The case shows the buyer text, the evidence PayPal asked for, a draft, and an approval card with the exact payload. Approving is what calls `provide-evidence`, adds tracking, or accepts the claim. A partial refund is capped by the dispute amount, PayPal’s allowed refund, and `MAX_PARTIAL_REFUND_USD` (default $200).
-6. A **Recovered** counter sums amounts we have answered and not refunded. Every figure on the card names the PayPal field and record id it came from.
+6. **Submitted** is the sum of disputes where evidence was sent and PayPal has not resolved them. **Recovered** counts only a resolution in the seller's favor. Every figure names the PayPal field and record id it came from.
 
 Without PayPal keys the same screens run in **replay**. The banner says so. Replay never calls PayPal and must not be described as a live chargeback.
 
@@ -55,7 +55,9 @@ Defaults, overridable with env vars. Full notes and the comparison tables are in
 
 `Qwen/Qwen3-235B-A22B-Instruct-2507` is refused. In the Oct 30 study it followed a planted refund in every run.
 
-Offline eval on the 32 planted disputes: classification 32/32, evidence types 32/32, amount and deadline exact match 32/32, unapproved writes 0, about $0.0052 per dispute at the recorded Flash token mix. See [EVAL.md](EVAL.md).
+On 31 Oct 2026 a live sandbox run of `npm run eval -- --live` (32 seeded disputes, real Nebius calls, no writes) classified 32/32 and matched amounts 32/32. Cost averaged about $0.00046 per dispute (range $0.000175–$0.003895). Model latency was p50 1.3 s and p95 5.7 s. Through the running app, analyses were about $0.0003 and 1.6–3.5 s including the PayPal reads. Those figures are from that run, not a fresh measurement in this checkout.
+
+`npm run eval` without `--live` scores fixtures only. Its dollar figure is a recorded token mix, not a live bill. The 9–15 s range in [MODELS.md](MODELS.md) is the 30 Oct selection task, not this dispute desk. See [EVAL.md](EVAL.md).
 
 ## Setup
 
@@ -75,7 +77,8 @@ The server reads `PORT` (default 3000). Open `http://localhost:3000`.
 | `npm test` | Unit tests and the HTTP replay flow, including the injection case. No network. |
 | `npm run seed` | Rewrites `fixtures/scenario.json` and `fixtures/ground_truth.json` (32 disputes, 5 injections). |
 | `SEED_LIVE=1 npm run seed` | Also creates sandbox card orders and chargebacks. Needs PayPal keys. Prints dispute ids, never secrets. Non-zero if a call fails. |
-| `npm run eval` | Scores the fixtures. Non-zero if accuracy, money, deadlines, or the write check fails. |
+| `npm run eval` | Scores the fixtures. Labeled fixture, not live. Non-zero if a check fails. |
+| `npm run eval -- --live` | Runs this app's reader and money engine on `fixtures/live-seed-result.json` against the sandbox and Nebius. Does not send writes. Needs keys and a prior `SEED_LIVE=1 npm run seed`. |
 | `npm run smoke` | Checks that the four credentials are set, then auths to PayPal and Nebius. Prints `set` or `missing` and `ok`. Never prints secrets. Non-zero if a variable is missing or auth fails. |
 | `npm start` | Serves the API and the built UI. |
 
@@ -85,7 +88,7 @@ The server reads `PORT` (default 3000). Open `http://localhost:3000`.
 |---|---|
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | Sandbox REST app. Base URL defaults to `https://api-m.sandbox.paypal.com`. |
 | `PAYPAL_WEBHOOK_ID` | Passed to `verify-webhook-signature`. |
-| `PAYPAL_MERCHANT_ID` | Optional. Otherwise taken from the card order’s payee. |
+| `PAYPAL_MERCHANT_ID` | Optional fallback. Simulate and live seed send `Prefer: return=representation` and, if payee is still missing, `GET /v2/checkout/orders/{id}`. Set this only when both omit `purchase_units[0].payee.merchant_id`. |
 | `NEBIUS_API_KEY` | Token Factory key. |
 | `NEBIUS_BASE_URL` | Default `https://api.tokenfactory.nebius.com/v1`. |
 | `AGENT_MODEL`, `ROUTER_MODEL`, `FALLBACK_MODEL` | Model ids. |

@@ -26,6 +26,8 @@ describe("caps", () => {
     );
     limiter.takeSimulation("10.1.1.1");
     assert.throws(() => limiter.takeSimulation("10.1.1.1"), /simulated/);
+    limiter.releaseSimulation("10.1.1.1");
+    limiter.takeSimulation("10.1.1.1");
   });
 
   it("queues work past the concurrency cap", async () => {

@@ -83,21 +83,28 @@ export function computeFigures(
   dispute: DisputeMoneyInput,
   order: OrderMoneyInput | null,
   now: Date,
-  sandbox: boolean,
+  options: { replay: boolean } = { replay: false },
 ): MoneyFacts {
   const capture = order?.purchase_units?.[0]?.payments?.captures?.[0];
   const captureId = dispute.disputed_transactions?.[0]?.seller_transaction_id || capture?.id || null;
   const breakdown = capture?.seller_receivable_breakdown;
   const stake = readMoney(dispute.dispute_amount);
   const allowed = readMoney(dispute.refund_details?.allowed_refund_amount) || stake;
-  const gross = readMoney(breakdown?.gross_amount) || readMoney(dispute.disputed_transactions?.[0]?.gross_amount);
+  const grossFromBreakdown = readMoney(breakdown?.gross_amount);
+  const grossFromTxn = readMoney(dispute.disputed_transactions?.[0]?.gross_amount);
+  const gross = grossFromBreakdown || grossFromTxn;
+  const grossSource = grossFromBreakdown
+    ? "seller_receivable_breakdown.gross_amount"
+    : "disputed_transactions.gross_amount";
   const fee = readMoney(breakdown?.paypal_fee);
   const net = readMoney(breakdown?.net_amount);
   const holdMove = (dispute.fund_movements || []).find((m) => m.type === "DEBIT" && m.reason === "HOLD_PLACED");
   const hold = readMoney(holdMove?.amount);
   const tracker = order?.purchase_units?.[0]?.shipping?.trackers?.[0];
   const deadline = dispute.seller_response_due_date || null;
-  const simulated = sandbox || dispute.extensions?.mendcash_simulated_deadline === true;
+  // A date PayPal returned in seller_response_due_date is PayPal's date, including in the sandbox.
+  // Replay fixtures are not live PayPal, so those deadlines stay labeled simulated.
+  const simulated = options.replay;
   const currency = stake?.currency || gross?.currency || "USD";
   const disputeId = dispute.dispute_id;
 
@@ -124,9 +131,23 @@ export function computeFigures(
   push("stake", "Amount at stake", stake, "dispute_amount", disputeId, "dispute");
   push("allowed_refund", "Allowed refund", allowed, "refund_details.allowed_refund_amount", disputeId, "dispute");
   if (captureId) {
-    push("gross", "Capture gross", gross, "seller_receivable_breakdown.gross_amount", captureId, "capture");
-    push("fee", "PayPal fee", fee, "seller_receivable_breakdown.paypal_fee", captureId, "capture");
-    push("net", "Seller net", net, "seller_receivable_breakdown.net_amount", captureId, "capture");
+    push("gross", "Capture gross", gross, grossSource, grossFromBreakdown ? captureId : disputeId, grossFromBreakdown ? "capture" : "dispute");
+    push(
+      "fee",
+      "PayPal fee",
+      fee,
+      fee ? "seller_receivable_breakdown.paypal_fee" : "seller_receivable_breakdown absent",
+      captureId,
+      "capture",
+    );
+    push(
+      "net",
+      "Seller net",
+      net,
+      net ? "seller_receivable_breakdown.net_amount" : "seller_receivable_breakdown absent",
+      captureId,
+      "capture",
+    );
   }
   if (hold) push("hold", "Hold placed", hold, "fund_movements.HOLD_PLACED", disputeId, "dispute");
 

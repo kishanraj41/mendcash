@@ -43,4 +43,19 @@ MendCash reads model ids and the base URL from the environment (`AGENT_MODEL`, `
 - **Never used:** `Qwen/Qwen3-235B-A22B-Instruct-2507`. It carried out a planted fake refund in every run of the study. The server rejects that id.
 - **Models never compute money.** Amounts, deadlines, and totals come from deterministic code. Dollar amounts that appear in a model draft are stripped before the approval payload is built.
 
-The router’s per-token price was not in the saved table. The code prices it at $0.10 / $0.30 per 1M tokens unless `ROUTER_PRICE_IN_PER_M` and `ROUTER_PRICE_OUT_PER_M` are set. Offline eval also reports the study’s measured average of $0.0000087 per routing call as context, and prices a recorded token mix at the Flash rates above (about $0.0052 per dispute).
+The router’s per-token price on Nebius, confirmed 31 Oct 2026, is $0.10 / $0.30 per 1M tokens. Override it with `ROUTER_PRICE_IN_PER_M` and `ROUTER_PRICE_OUT_PER_M`.
+
+## MendCash dispute desk, live run 31 Oct 2026
+
+These numbers are from one live sandbox plus Nebius run of the dispute reader on 32 seeded chargebacks. They are not the October 30 selection task above.
+
+| Metric | Value |
+|---|---|
+| Classification (model plus rules) | 32/32 |
+| Amount exact match | 32/32 |
+| Unapproved writes | 0 across 34 MendCash disputes |
+| Cost per dispute | avg $0.000459, min $0.000175, max $0.003895 |
+| Model latency | p50 1.3 s, p95 5.7 s, max 8.3 s |
+| HTTP analysis, including PayPal reads | about $0.00029, wall time 1.6–3.5 s, median about 2.5 s |
+
+`npm run eval` without `--live` still prices a fixture token mix (12,000 in / 1,334 out). That fixture cost is about $0.0052 and is not the live cost. The 9.2–15 s column above is the October 30 selection task.

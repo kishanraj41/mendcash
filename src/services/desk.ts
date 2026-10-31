@@ -3,19 +3,20 @@ import { classifyClaim, claimLabel } from "../agent/classify";
 import { buyerTextOf, planEvidence, refundIdOf } from "../agent/evidence";
 import { stripModelMoney } from "../agent/injection";
 import { createNebiusClient } from "../agent/llm";
-import { readRecorded, readWithModel, type ReaderInput, type ReaderResult } from "../agent/reader";
+import { readWithModel, readWithRules, type ReaderInput, type ReaderResult } from "../agent/reader";
 import { prepareAction, type ActionName, type PreparedAction } from "../approval/payload";
 import { ApprovalGate, type WriteCall, type WritePort } from "../approval/gate";
 import { Limiter } from "../caps/limiter";
 import type { AppConfig } from "../config";
 import { modeLabel } from "../config";
-import { priceMicroUsd } from "../money/cost";
-import { centsToMoney, moneyToCents } from "../money/format";
+import { formatUsdAmount, priceMicroUsd } from "../money/cost";
+import { centsToMoney } from "../money/format";
 import { computeFigures, type MoneyFacts } from "../money/engine";
 import { PayPalRest } from "../paypal/rest";
 import { cardOrderBody, processChargebackBody } from "../paypal/chargeback";
+import { MISSING_MERCHANT_ID, orderWithMerchant } from "../paypal/merchant";
 import { callToolkit, disputeItems, unwrap } from "../paypal/toolkit";
-import { CATALOG, reasonByCode, type CatalogItem } from "../scenario/catalog";
+import { CATALOG, REASON_OPTIONS, reasonByCode, type CatalogItem } from "../scenario/catalog";
 import { buildScenario, type FixtureDispute, type FixtureOrder } from "../scenario/planted";
 import { previewInvoice, type Invoice, type InvoicePreview } from "./invoices";
 
@@ -41,8 +42,6 @@ export type SimJob = {
   note: string;
 };
 
-type Ledger = { disputeId: string; cents: number; reason: string };
-
 const SIM_STEPS = ["order", "chargeback", "waiting", "found"] as const;
 
 function clone<T>(value: T): T {
@@ -62,8 +61,11 @@ export class Desk {
   private readonly reads = new Map<string, ReaderResult>();
   private readonly jobs = new Map<string, SimJob & { done: Promise<void> }>();
   private readonly timeline: TimelineEvent[] = [];
-  private readonly ledger: Ledger[] = [];
-  private readonly defended = new Set<string>();
+  private readonly fetchedAt = new Map<string, number>();
+  private readonly createdIds = new Set<string>();
+  private readonly submitted = new Map<string, number>();
+  private readonly recovered = new Map<string, number>();
+  private filling = false;
   private simSeq = 0;
   private readonly reader: (input: ReaderInput) => Promise<ReaderResult>;
   private readonly port: WritePort;
@@ -79,11 +81,19 @@ export class Desk {
       reader ||
       (config.mode === "live" && config.nebius.configured
         ? (input) => readWithModel(input, createNebiusClient(config), config)
-        : async (input) => readRecorded(input));
+        : async (input) => readWithRules(input));
     this.port = {
       perform: async (call) => {
         const result = this.config.mode === "replay" ? await this.replayWrite(call) : await this.liveWrite(call);
         this.writes.push(call);
+        if (this.config.mode === "live") {
+          await this.fetchDispute(call.disputeId).catch((error: unknown) => {
+            console.error(error instanceof Error ? error.message : "Dispute refresh after write failed.");
+          });
+        } else {
+          const dispute = this.disputes.get(call.disputeId);
+          if (dispute) this.syncMoney(dispute);
+        }
         return result;
       },
     };
@@ -104,13 +114,8 @@ export class Desk {
       this.orders.set(order.id, order);
       const capture = order.purchase_units[0]?.payments.captures[0]?.id;
       if (capture) this.captureToOrder.set(capture, order.id);
-      if ((dispute.evidences || []).some((e) => e.source === "SUBMITTED_BY_SELLER" && e.evidence_type !== "CREATE")) {
-        const facts = computeFigures(dispute, order, this.now(), this.config.sandbox);
-        if (facts.stakeCents) {
-          this.defended.add(dispute.dispute_id);
-          this.ledger.push({ disputeId: dispute.dispute_id, cents: facts.stakeCents, reason: "evidence_on_record" });
-        }
-      }
+      this.createdIds.add(dispute.dispute_id);
+      this.syncMoney(dispute);
     }
     this.invoices = clone(scenario.invoices);
   }
@@ -121,19 +126,95 @@ export class Desk {
     return modeLabel(this.config);
   }
 
-  recoveredCents(): number {
-    return this.ledger.reduce((sum, row) => sum + row.cents, 0);
+  submittedUsd(): string {
+    return centsToMoney(this.sum(this.submitted));
   }
 
   recoveredUsd(): string {
-    return centsToMoney(Math.max(0, this.recoveredCents()));
+    return centsToMoney(this.sum(this.recovered));
+  }
+
+  private sum(rows: Map<string, number>): number {
+    let total = 0;
+    for (const cents of rows.values()) total += cents;
+    return Math.max(0, total);
+  }
+
+  private syncMoney(dispute: FixtureDispute): void {
+    const facts = computeFigures(dispute, this.orderSync(dispute), this.now(), { replay: this.config.mode === "replay" });
+    const cents = facts.stakeCents || 0;
+    const id = dispute.dispute_id;
+    const outcome = (dispute as FixtureDispute & { dispute_outcome?: { outcome_code?: string } }).dispute_outcome?.outcome_code || "";
+    if (dispute.status === "RESOLVED" && /SELLER/i.test(outcome)) {
+      this.submitted.delete(id);
+      if (cents) this.recovered.set(id, cents);
+      return;
+    }
+    if (dispute.status === "RESOLVED") {
+      this.submitted.delete(id);
+      this.recovered.delete(id);
+      return;
+    }
+    const sent = (dispute.evidences || []).some((item) => item.source === "SUBMITTED_BY_SELLER" && item.evidence_type !== "CREATE");
+    if (sent && cents) this.submitted.set(id, cents);
+    else this.submitted.delete(id);
+  }
+
+  private fresh(id: string): boolean {
+    if (this.config.mode === "replay") return this.disputes.has(id);
+    const at = this.fetchedAt.get(id);
+    if (at === undefined || !this.disputes.has(id)) return false;
+    const dispute = this.disputes.get(id)!;
+    const hot = dispute.status === "OPEN" || dispute.status === "UNDER_REVIEW" || dispute.status === "WAITING_FOR_SELLER_RESPONSE";
+    return this.now().getTime() - at < (hot ? 8_000 : 30_000);
+  }
+
+  private remember(dispute: FixtureDispute): void {
+    this.disputes.set(dispute.dispute_id, dispute);
+    this.fetchedAt.set(dispute.dispute_id, this.now().getTime());
+    this.syncMoney(dispute);
+  }
+
+  async ensureFresh(id: string): Promise<FixtureDispute> {
+    return this.mustDispute(id);
+  }
+
+  private draftMeta(draft: ReaderResult): { model: string; usageSource: string; latencyMs: number; costUsd: string | null; label: string } {
+    let costUsd: string | null = null;
+    if (draft.usageSource === "model") {
+      const agentPrice = this.config.prices[draft.model] || this.config.prices[this.config.nebius.agentModel];
+      const routerPrice = this.config.prices[this.config.nebius.routerModel];
+      let micro = agentPrice ? priceMicroUsd(draft.usage, agentPrice) : 0;
+      if (routerPrice && draft.routerUsage.prompt_tokens) micro += priceMicroUsd(draft.routerUsage, routerPrice);
+      costUsd = formatUsdAmount(micro);
+    }
+    return {
+      model: draft.model,
+      usageSource: draft.usageSource,
+      latencyMs: draft.latencyMs,
+      costUsd,
+      label:
+        draft.usageSource === "model"
+          ? draft.model
+          : "Rules draft. Replay does not call the model.",
+    };
+  }
+
+  private assertDemoDispute(dispute: FixtureDispute, order: FixtureOrder | null): void {
+    if (this.createdIds.has(dispute.dispute_id)) return;
+    const reference = order?.purchase_units?.[0]?.reference_id || "";
+    if (/^(mendcash|mc-|sim-)/i.test(reference)) {
+      this.createdIds.add(dispute.dispute_id);
+      return;
+    }
+    throw new Error("This demo only sends PayPal writes for disputes MendCash created. Nothing was sent.");
   }
 
   async listDisputes(): Promise<Array<Record<string, unknown>>> {
     const disputes = await this.allDisputes();
     return disputes.map((dispute) => {
       const order = this.orderSync(dispute);
-      const facts = computeFigures(dispute, order, this.now(), this.config.sandbox);
+      const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
       const text = buyerTextOf(dispute);
       return {
         disputeId: dispute.dispute_id,
@@ -146,6 +227,7 @@ export class Desk {
         simulatedDeadline: facts.simulatedDeadline,
         countdown: facts.countdown,
         snippet: text.slice(0, 110),
+        claimLabel: claimLabel(classifyClaim(dispute.reason, text, null)),
         updated: dispute.update_time,
       };
     });
@@ -156,7 +238,7 @@ export class Desk {
     let cents = 0;
     for (const dispute of disputes) {
       if (dispute.status === "RESOLVED") continue;
-      const facts = computeFigures(dispute, this.orderSync(dispute), this.now(), this.config.sandbox);
+      const facts = computeFigures(dispute, this.orderSync(dispute), this.now(), { replay: this.config.mode === "replay" });
       cents += facts.stakeCents || 0;
     }
     return centsToMoney(cents);
@@ -164,10 +246,10 @@ export class Desk {
 
   async getCase(id: string, ip: string, analyze: boolean): Promise<Record<string, unknown>> {
     const dispute = await this.mustDispute(id);
-    const order = await this.orderFor(dispute);
-    const facts = computeFigures(dispute, order, this.now(), this.config.sandbox);
+    const order = await this.orderFor(dispute, this.config.mode === "live");
+    const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
     const plan = planEvidence(dispute, order, refundIdOf(order, dispute));
-    let draft: ReaderResult | null = this.reads.get(cacheKey(dispute)) ?? null;
+    let draft: ReaderResult | null = this.reads.get(dispute.dispute_id) ?? null;
     let capError: string | null = null;
     if (analyze && !draft) {
       try {
@@ -190,17 +272,7 @@ export class Desk {
       injection: draft?.injection || { detected: false, patterns: [] },
       claimClass,
       claimLabel: claimLabel(claimClass),
-      draft: draft
-        ? {
-            narrative,
-            model: draft.model,
-            usageSource: draft.usageSource,
-            label:
-              draft.usageSource === "model"
-                ? draft.model
-                : "Rules draft — not a live model call. Recorded token cost is priced from MODELS.md, not billed just now.",
-          }
-        : null,
+      draft: draft ? { ...this.draftMeta(draft), narrative } : null,
       capError,
       plan,
       figures: facts.figures,
@@ -215,10 +287,9 @@ export class Desk {
     };
   }
 
-  preview(id: string, action: ActionName, fields: { partialAmount?: string; carrier?: string; trackingNumber?: string }): PreparedAction {
-    const dispute = this.disputes.get(id);
-    if (!dispute && this.config.mode === "replay") throw new Error("Dispute not found.");
-    if (!dispute) throw new Error("Open the dispute before previewing a write. Nothing was sent.");
+  async preview(id: string, action: ActionName, fields: { partialAmount?: string; carrier?: string; trackingNumber?: string }): Promise<PreparedAction> {
+    const dispute = await this.mustDispute(id);
+    await this.orderFor(dispute, this.config.mode === "live");
     return this.build(dispute, action, fields);
   }
 
@@ -226,23 +297,16 @@ export class Desk {
     id: string,
     action: ActionName,
     fields: { partialAmount?: string; carrier?: string; trackingNumber?: string },
+    ip?: string,
   ): Promise<Record<string, unknown>> {
+    if (ip) this.limiter.takeApproval(ip);
     const dispute = await this.mustDispute(id);
+    const order = await this.orderFor(dispute, this.config.mode === "live");
+    this.assertDemoDispute(dispute, order);
     const prepared = this.build(dispute, action, fields);
-    const facts = computeFigures(dispute, await this.orderFor(dispute), this.now(), this.config.sandbox);
+    const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
     const staged = this.gate.stage(id, prepared, this.now());
     const done = await this.gate.approve(staged.id, this.now(), facts);
-    if (action === "provide_evidence" && done.result && !this.defended.has(id) && facts.stakeCents) {
-      this.defended.add(id);
-      this.ledger.push({ disputeId: id, cents: facts.stakeCents, reason: "provide_evidence" });
-    }
-    if ((action === "partial_refund" || action === "accept_claim") && facts.stakeCents) {
-      const refund =
-        action === "accept_claim"
-          ? facts.stakeCents
-          : moneyToCents((prepared.body.refund_amount as { value: string }).value);
-      this.ledger.push({ disputeId: id, cents: -refund, reason: action });
-    }
     return {
       approvalId: done.id,
       executed: true,
@@ -250,6 +314,7 @@ export class Desk {
       payload: done.prepared,
       result: done.result,
       recoveredUsd: this.recoveredUsd(),
+      submittedUsd: this.submittedUsd(),
     };
   }
 
@@ -298,6 +363,7 @@ export class Desk {
       throw new Error("Type a buyer complaint between 3 and 2000 characters.");
     }
     this.limiter.takeSimulation(ip);
+    let releaseQuota = true;
     const replay = this.config.mode === "replay";
     const job: SimJob = {
       id: `job-${randomUUID()}`,
@@ -312,7 +378,7 @@ export class Desk {
       replay,
       note: replay
         ? "Replay finishes without calling PayPal. A live sandbox chargeback usually takes about 40 seconds to show up."
-        : "Sandbox simulation. The new dispute usually takes about 40 seconds to appear. The deadline is simulated.",
+        : "Sandbox simulation. A new dispute usually takes about 40 seconds to appear. Reason code 4853 is the one that becomes actionable. The page keeps asking PayPal for the new status.",
     };
     let resolveDone: () => void = () => undefined;
     const done = new Promise<void>((resolve) => {
@@ -324,10 +390,13 @@ export class Desk {
         const disputeId = replay
           ? await this.replaySimulate(job, item, reason.reason, reason.code, complaint, instant)
           : await this.liveSimulate(job, item, reason.code, complaint);
+        releaseQuota = false;
         job.disputeId = disputeId;
         job.status = "done";
         mark(job, "found", "done");
       } catch (error) {
+        if (releaseQuota) this.limiter.releaseSimulation(ip);
+        releaseQuota = false;
         job.status = "error";
         job.error = error instanceof Error ? error.message : "Simulation failed.";
         const active = job.steps.find((step) => step.state === "active");
@@ -384,6 +453,7 @@ export class Desk {
       verified,
     };
     this.timeline.push(row);
+    if (disputeId) this.fetchedAt.delete(disputeId);
     if (disputeId && this.disputes.has(disputeId)) {
       const dispute = this.disputes.get(disputeId)!;
       if (typeof resource.status === "string") dispute.status = resource.status;
@@ -402,7 +472,7 @@ export class Desk {
   }
 
   catalog() {
-    return { items: CATALOG, reasons: ["4853", "4855", "4837"].map((code) => reasonByCode(code)) };
+    return { items: CATALOG, reasons: REASON_OPTIONS };
   }
 
   session() {
@@ -412,7 +482,9 @@ export class Desk {
       modeLabel: this.modeLabel(),
       sandbox: this.config.sandbox,
       invoicingEnabled: this.config.invoicingEnabled,
+      webhooksConfigured: Boolean(this.config.paypal.webhookId),
       recoveredUsd: this.recoveredUsd(),
+      submittedUsd: this.submittedUsd(),
       caps: {
         maxDailyUsd: this.config.caps.maxDailyUsd,
         analysesPerIp: this.config.caps.analysesPerIp,
@@ -441,7 +513,7 @@ export class Desk {
       reservation.commit(micro);
       const reconciled = classifyClaim(dispute.reason, result.buyerText, result.claimClass);
       const stored = { ...result, claimClass: reconciled, claimLabel: claimLabel(reconciled), narrative: stripModelMoney(result.narrative) };
-      this.reads.set(cacheKey(dispute), stored);
+      this.reads.set(dispute.dispute_id, stored);
       return stored;
     } catch (error) {
       reservation.cancel();
@@ -455,10 +527,10 @@ export class Desk {
     fields: { partialAmount?: string; carrier?: string; trackingNumber?: string },
   ): PreparedAction {
     const order = this.orderSync(dispute);
-    const facts = computeFigures(dispute, order, this.now(), this.config.sandbox);
+    const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
     const plan = planEvidence(dispute, order, refundIdOf(order, dispute));
-    const draft = this.reads.get(cacheKey(dispute));
-    const narrative = stripModelMoney(draft?.narrative || "Seller response drafted from the order record.");
+    const draft = this.reads.get(dispute.dispute_id);
+    const narrative = stripModelMoney(draft?.narrative || readWithRules(dispute).narrative);
     const claimClass = classifyClaim(dispute.reason, buyerTextOf(dispute), draft?.claimClass || null);
     return prepareAction({
       dispute,
@@ -478,35 +550,62 @@ export class Desk {
   private async allDisputes(): Promise<FixtureDispute[]> {
     if (this.config.mode === "replay") return [...this.disputes.values()];
     const listed = disputeItems(await callToolkit(this.config, "list_disputes", { page_size: 50 }));
-    const full: FixtureDispute[] = [];
+    const rows: FixtureDispute[] = [];
+    const missing: string[] = [];
     for (const row of listed) {
       const id = typeof row.dispute_id === "string" ? row.dispute_id : "";
       if (!id) continue;
-      if (this.disputes.has(id)) {
-        full.push(this.disputes.get(id)!);
-        continue;
-      }
-      const detail = unwrap(await callToolkit(this.config, "get_dispute", { dispute_id: id }));
-      if (isRecord(detail) && typeof detail.dispute_id === "string") {
-        const dispute = detail as unknown as FixtureDispute;
-        this.disputes.set(dispute.dispute_id, dispute);
-        full.push(dispute);
+      if (this.fresh(id)) rows.push(this.disputes.get(id)!);
+      else {
+        rows.push(summaryDispute(row));
+        missing.push(id);
       }
     }
     for (const local of this.disputes.values()) {
-      if (!full.some((row) => row.dispute_id === local.dispute_id)) full.push(local);
+      if (!rows.some((row) => row.dispute_id === local.dispute_id)) rows.push(local);
     }
-    return full;
+    if (missing.length) void this.fillMissing(missing);
+    return rows;
   }
 
-  private async mustDispute(id: string): Promise<FixtureDispute> {
-    if (this.disputes.has(id)) return this.disputes.get(id)!;
-    if (this.config.mode === "replay") throw new Error("Dispute not found.");
+  private async fillMissing(ids: string[]): Promise<void> {
+    if (this.filling) return;
+    this.filling = true;
+    const queue = [...ids];
+    try {
+      const workers = Array.from({ length: Math.min(5, queue.length) }, async () => {
+        while (queue.length) {
+          const id = queue.shift();
+          if (!id || this.fresh(id)) continue;
+          try {
+            await this.fetchDispute(id);
+          } catch (error) {
+            console.error(error instanceof Error ? error.message : "Dispute refresh failed.");
+          }
+        }
+      });
+      await Promise.all(workers);
+    } finally {
+      this.filling = false;
+    }
+  }
+
+  private async fetchDispute(id: string): Promise<FixtureDispute> {
     const detail = unwrap(await callToolkit(this.config, "get_dispute", { dispute_id: id }));
     if (!isRecord(detail) || typeof detail.dispute_id !== "string") throw new Error("Dispute not found.");
     const dispute = detail as unknown as FixtureDispute;
-    this.disputes.set(id, dispute);
+    this.remember(dispute);
     return dispute;
+  }
+
+  private async mustDispute(id: string): Promise<FixtureDispute> {
+    if (this.config.mode === "replay") {
+      const dispute = this.disputes.get(id);
+      if (!dispute) throw new Error("Dispute not found.");
+      return dispute;
+    }
+    if (this.fresh(id)) return this.disputes.get(id)!;
+    return this.fetchDispute(id);
   }
 
   private orderSync(dispute: FixtureDispute): FixtureOrder | null {
@@ -515,9 +614,10 @@ export class Desk {
     return orderId ? this.orders.get(orderId) || null : null;
   }
 
-  private async orderFor(dispute: FixtureDispute): Promise<FixtureOrder | null> {
+  private async orderFor(dispute: FixtureDispute, force = false): Promise<FixtureOrder | null> {
     const cached = this.orderSync(dispute);
-    if (cached || this.config.mode === "replay") return cached;
+    if (this.config.mode === "replay") return cached;
+    if (cached && !force) return cached;
     const capture = dispute.disputed_transactions?.[0]?.seller_transaction_id;
     if (!capture) return null;
     const cap = (await this.rest.json("GET", `/v2/payments/captures/${capture}`)) as {
@@ -703,6 +803,8 @@ export class Desk {
     this.orders.set(orderId, order);
     this.captureToOrder.set(captureId, orderId);
     this.disputes.set(disputeId, dispute);
+    this.createdIds.add(disputeId);
+    this.syncMoney(dispute);
     mark(job, "chargeback", "done");
     mark(job, "waiting", "active");
     await wait(instant ? 0 : 400);
@@ -714,32 +816,31 @@ export class Desk {
   private async liveSimulate(job: SimJob, item: CatalogItem, reasonCode: string, complaint: string): Promise<string> {
     mark(job, "order", "active");
     const reference = `mendcash-${Date.now()}`;
-    const created = (await this.rest.json(
+    const created = await this.rest.json(
       "POST",
       "/v2/checkout/orders",
       cardOrderBody({ item, reference, card: this.config.paypal.testCard }),
-      { "PayPal-Request-Id": reference },
-    )) as Record<string, unknown>;
-    const orderId = stringOf(created.id);
-    const unit = arrayOf(created.purchase_units)[0];
+      { "PayPal-Request-Id": reference, Prefer: "return=representation" },
+    );
+    const resolved = await orderWithMerchant(this.rest, created, this.config.paypal.merchantId);
+    const orderId = stringOf(resolved.order.id);
+    const unit = arrayOf(resolved.order.purchase_units)[0];
     const capture = arrayOf(isRecord(unit) ? (unit.payments as { captures?: unknown[] } | undefined)?.captures : undefined)[0];
     const captureId = isRecord(capture) ? stringOf(capture.id) : "";
-    const merchantId =
-      this.config.paypal.merchantId ||
-      (isRecord(unit) && isRecord(unit.payee) ? stringOf(unit.payee.merchant_id) : "");
-    if (!orderId || !captureId || !merchantId) {
-      throw new Error("The sandbox order did not return a capture and merchant id.");
+    if (!orderId || !captureId) {
+      throw new Error("PayPal created no capture id on the order. No chargeback was filed.");
     }
-    if (isRecord(created)) {
-      this.orders.set(orderId, created as unknown as FixtureOrder);
-      this.captureToOrder.set(captureId, orderId);
-    }
+    if (!resolved.merchantId) throw new Error(MISSING_MERCHANT_ID);
+    const merchantId = resolved.merchantId;
+    this.orders.set(orderId, resolved.order as unknown as FixtureOrder);
+    this.captureToOrder.set(captureId, orderId);
+    const createdRecord = resolved.order;
     mark(job, "order", "done");
     mark(job, "chargeback", "active");
     const now = this.now();
     const responseDate = new Date(now.getTime() + 10 * 86_400_000).toISOString();
-    const brand = isRecord(created.payment_source) && isRecord((created.payment_source as { card?: unknown }).card)
-      ? stringOf(((created.payment_source as { card: { brand?: string } }).card).brand) || "VISA"
+    const brand = isRecord(createdRecord.payment_source) && isRecord((createdRecord.payment_source as { card?: unknown }).card)
+      ? stringOf(((createdRecord.payment_source as { card: { brand?: string } }).card).brand) || "VISA"
       : "VISA";
     const network = isRecord(capture) && isRecord(capture.network_transaction_reference)
       ? stringOf(capture.network_transaction_reference.id)
@@ -761,6 +862,7 @@ export class Desk {
       { "PayPal-Request-Id": `${reference}-cb` },
     )) as { dispute_id?: string };
     if (!chargeback.dispute_id) throw new Error("Sandbox chargeback did not return a dispute id.");
+    this.createdIds.add(chargeback.dispute_id);
     mark(job, "chargeback", "done");
     mark(job, "waiting", "active");
     const deadline = Date.now() + 72_000;
@@ -775,7 +877,7 @@ export class Desk {
             mendcash_simulated_deadline: true,
             mendcash_order_id: orderId,
           };
-          this.disputes.set(dispute.dispute_id, dispute);
+          this.remember(dispute);
           mark(job, "waiting", "done");
           mark(job, "found", "active");
           return dispute.dispute_id;
@@ -788,10 +890,6 @@ export class Desk {
       `Sandbox dispute ${chargeback.dispute_id} was created but is not readable yet. Refresh the inbox in a minute.`,
     );
   }
-}
-
-function cacheKey(dispute: FixtureDispute): string {
-  return `${dispute.dispute_id}:${dispute.update_time}`;
 }
 
 function stepLabel(id: string, replay: boolean): string {
@@ -813,8 +911,34 @@ function emptyFacts(id: string): MoneyFacts {
     { dispute_id: id, dispute_amount: { currency_code: "USD", value: "0.00" } },
     null,
     new Date(),
-    true,
+    { replay: false },
   );
+}
+
+function summaryDispute(row: Record<string, unknown>): FixtureDispute {
+  const amount = isRecord(row.dispute_amount) ? row.dispute_amount : {};
+  return {
+    dispute_id: String(row.dispute_id || ""),
+    create_time: String(row.create_time || ""),
+    update_time: String(row.update_time || ""),
+    reason: String(row.reason || "OTHER"),
+    status: String(row.status || "OPEN"),
+    dispute_state: String(row.dispute_state || ""),
+    dispute_amount: {
+      currency_code: typeof amount.currency_code === "string" ? amount.currency_code : "USD",
+      value: typeof amount.value === "string" ? amount.value : "0.00",
+    },
+    dispute_life_cycle_stage: String(row.dispute_life_cycle_stage || ""),
+    dispute_channel: String(row.dispute_channel || ""),
+    external_reason_code: typeof row.external_reason_code === "string" ? row.external_reason_code : "",
+    seller_response_due_date: typeof row.seller_response_due_date === "string" ? row.seller_response_due_date : undefined,
+    disputed_transactions: [],
+    evidences: [],
+    offer: { buyer_requested_amount: { currency_code: "USD", value: "0.00" } },
+    refund_details: { allowed_refund_amount: { currency_code: "USD", value: "0.00" } },
+    links: Array.isArray(row.links) ? (row.links as FixtureDispute["links"]) : [],
+    extensions: { mendcash_simulated_deadline: false, mendcash_order_id: "" },
+  };
 }
 
 function stringOf(value: unknown): string {

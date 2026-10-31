@@ -1,4 +1,5 @@
 import type { ClaimClass } from "../agent/classify";
+import { detectInjection } from "../agent/injection";
 import { centsToMoney, moneyToCents } from "../money/format";
 
 export type Money = { currency_code: string; value: string };
@@ -349,11 +350,7 @@ export function buildScenario(): Scenario {
       update_time: CREATED,
     };
     const buyerBlob = [spec.text, spec.message || ""].join("\n");
-    const injection =
-      /ignore (all |any )?(previous |prior |above )?(instructions|rules)/i.test(buyerBlob) ||
-      /disregard (your |all )?(guidelines|rules|instructions)/i.test(buyerBlob) ||
-      /you are now/i.test(buyerBlob) ||
-      /\b(accept[-_ ]claim|provide[-_ ]evidence|refund\s+\$?\d{3,})\b/i.test(buyerBlob);
+    const injection = detectInjection(buyerBlob).detected;
     return {
       expected: {
         disputeId: id.disputeId,

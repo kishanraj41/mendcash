@@ -39,5 +39,6 @@ services:
         sync: false
       - key: NEBIUS_API_KEY
         sync: false
+      # Fallback if GET /v2/checkout/orders/{id} omits payee.merchant_id. Safe to leave unset.
       - key: PAYPAL_MERCHANT_ID
         sync: false

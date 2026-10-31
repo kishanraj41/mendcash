@@ -2,19 +2,32 @@ import fs from "fs";
 import path from "path";
 import { loadConfig } from "../src/config";
 import { cardOrderBody, processChargebackBody } from "../src/paypal/chargeback";
-import { createFetchClient } from "../src/paypal/http";
-import { PayPalApiError, PayPalRest } from "../src/paypal/rest";
+import { createFetchClient, PayPalApiError } from "../src/paypal/http";
+import { MISSING_MERCHANT_ID, orderWithMerchant } from "../src/paypal/merchant";
+import { PayPalRest } from "../src/paypal/rest";
+import { nodeTooOld } from "../src/runtime";
 import { CATALOG } from "../src/scenario/catalog";
 import { buildScenario, stableStringify } from "../src/scenario/planted";
 
 const root = path.resolve(__dirname, "..");
 const fixtures = path.join(root, "fixtures");
 
+function writeIfChanged(file: string, contents: string): void {
+  if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === contents) return;
+  fs.writeFileSync(file, contents);
+}
+
+function buyerComplaint(row: ReturnType<typeof buildScenario>["disputes"][number]): string {
+  const notes = row.dispute.evidences.filter((item) => item.source === "SUBMITTED_BY_BUYER" && item.notes).map((item) => item.notes);
+  const messages = (row.dispute.messages || []).filter((item) => item.posted_by === "BUYER").map((item) => item.content);
+  return [...notes, ...messages].join("\n").slice(0, 2000);
+}
+
 function writeOffline(): { disputes: number; injections: number } {
   const scenario = buildScenario();
   fs.mkdirSync(fixtures, { recursive: true });
-  fs.writeFileSync(path.join(fixtures, "scenario.json"), stableStringify(scenario));
-  fs.writeFileSync(
+  writeIfChanged(path.join(fixtures, "scenario.json"), stableStringify(scenario));
+  writeIfChanged(
     path.join(fixtures, "ground_truth.json"),
     stableStringify({
       version: 1,
@@ -45,18 +58,21 @@ async function liveSeed(): Promise<void> {
     };
     const reference = `mendcash-seed-${String(index + 1).padStart(2, "0")}`;
     try {
-      const order = (await rest.json("POST", "/v2/checkout/orders", cardOrderBody({
+      const created = await rest.json("POST", "/v2/checkout/orders", cardOrderBody({
         item,
         reference,
         card: config.paypal.testCard,
-      }), { "PayPal-Request-Id": reference })) as {
+      }), { "PayPal-Request-Id": reference, Prefer: "return=representation" });
+      const resolved = await orderWithMerchant(rest, created, config.paypal.merchantId);
+      const order = resolved.order as {
         id?: string;
-        purchase_units?: Array<{ payee?: { merchant_id?: string }; payments?: { captures?: Array<{ id?: string; network_transaction_reference?: { id?: string } }> } }>;
+        purchase_units?: Array<{ payments?: { captures?: Array<{ id?: string; network_transaction_reference?: { id?: string } }> } }>;
         payment_source?: { card?: { brand?: string } };
       };
       const capture = order.purchase_units?.[0]?.payments?.captures?.[0];
-      const merchantId = config.paypal.merchantId || order.purchase_units?.[0]?.payee?.merchant_id || "";
-      if (!order.id || !capture?.id || !merchantId) throw new Error("Order response was missing capture or merchant id.");
+      const merchantId = resolved.merchantId;
+      if (!order.id || !capture?.id) throw new Error("PayPal created no capture id. No chargeback was filed.");
+      if (!merchantId) throw new Error(MISSING_MERCHANT_ID);
       const due = row.dispute.seller_response_due_date || new Date(Date.now() + 10 * 86_400_000).toISOString();
       const responseDate = Date.parse(due) > Date.now() ? due : new Date(Date.now() + 10 * 86_400_000).toISOString();
       const chargeback = (await rest.json(
@@ -67,9 +83,7 @@ async function liveSeed(): Promise<void> {
           captureId: capture.id,
           amount: row.dispute.dispute_amount.value,
           reasonCode: row.dispute.external_reason_code,
-          notes: row.expected.injection
-            ? row.dispute.evidences.find((item) => item.source === "SUBMITTED_BY_BUYER")?.notes || "Injection test"
-            : row.dispute.evidences.find((item) => item.source === "SUBMITTED_BY_BUYER")?.notes || item.title,
+          notes: buyerComplaint(row) || item.title,
           responseDate,
           receiveDate: new Date().toISOString(),
           cardBrand: order.payment_source?.card?.brand || "VISA",
@@ -101,6 +115,8 @@ async function liveSeed(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const tooOld = nodeTooOld();
+  if (tooOld) throw new Error(tooOld);
   const offline = writeOffline();
   console.log("mode: offline fixtures");
   console.log(`disputes: ${offline.disputes}`);
