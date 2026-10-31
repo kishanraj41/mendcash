@@ -46,7 +46,7 @@ Chargebacks arrive as messy buyer text plus a pile of PayPal fields. Language mo
 
 <img src="docs/assets/approve.gif" alt="Approving the evidence payload: the PayPal sandbox accepts it, the status flips to UNDER REVIEW and the Submitted counter rises by the dispute amount" width="900">
 
-One click on **Approve and send**. The sandbox accepts the evidence, the case moves to UNDER REVIEW, and *Submitted* rises by exactly the dispute amount ($16.40 here).
+One click on **Approve and send**. The sandbox accepts the evidence, the case moves to UNDER REVIEW, and *Submitted* rises by exactly the dispute amount ($32.50 here). The payload is gone the moment the send succeeds.
 
 ### A prompt injection, caught
 
@@ -116,13 +116,13 @@ flowchart LR
 | Model cost per dispute | **≈ $0.000317** |
 | Model latency | **p50 1.13 s · p95 2.53 s** |
 
-### Offline: 31 Oct 2026, commit [`a106214`](https://github.com/kishanraj41/mendcash/commit/a106214)
+### Offline: 31 Oct 2026, commit [`20362ed`](https://github.com/kishanraj41/mendcash/commit/20362ed)
 
 No network. Fixture data, labeled as such.
 
 | Command | Result |
 |---|---|
-| `npm test` | **21/21** passing |
+| `npm test` | **28/28** passing |
 | `npm run eval` | classification, evidence type, amount and deadline: **32/32** each; 5 injection cases; **0** unapproved writes |
 
 The fixture eval prices a recorded token mix, so its cost figure is not a live bill. Details: [EVAL.md](EVAL.md).
@@ -250,7 +250,7 @@ DeepSeek V4.1 Flash was the only model in the selection study that passed every 
 ## Testing and eval
 
 ```bash
-npm test                  # 21 tests: money engine, caps, demo guard, REST bodies, webhook verify, HTTP flow
+npm test                  # 28 tests: money engine, caps, demo guard, inbox status, .env loading, REST bodies, webhooks, HTTP flow
 npm run typecheck
 npm run eval              # offline: 32 planted disputes vs fixtures/ground_truth.json
 npm run eval -- --live    # live: needs keys and a prior SEED_LIVE=1 npm run seed; sends no writes
