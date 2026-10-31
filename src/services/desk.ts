@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "crypto";
+import os from "os";
+import path from "path";
 import { classifyClaim, claimLabel } from "../agent/classify";
 import { buyerTextOf, planEvidence, refundIdOf } from "../agent/evidence";
 import { stripModelMoney } from "../agent/injection";
@@ -7,6 +9,7 @@ import { readWithModel, readWithRules, type ReaderInput, type ReaderResult } fro
 import { prepareAction, type ActionName, type PreparedAction } from "../approval/payload";
 import { ApprovalGate, type WriteCall, type WritePort } from "../approval/gate";
 import { Limiter } from "../caps/limiter";
+import { readSpendFile, writeSpendFile, type SpendFile, type StoredRead } from "../caps/state-file";
 import type { AppConfig } from "../config";
 import { modeLabel } from "../config";
 import { formatUsdAmount, priceMicroUsd } from "../money/cost";
@@ -69,7 +72,11 @@ export class Desk {
   private readonly createdIds = new Set<string>();
   private readonly submitted = new Map<string, number>();
   private readonly recovered = new Map<string, number>();
-  private filling = false;
+  private fillJob: Promise<void> | null = null;
+  private initialScan: Promise<void> | null = null;
+  private countersReady = false;
+  private statePath: string | null = null;
+  private writingState = false;
   private simSeq = 0;
   private readonly reader: (input: ReaderInput) => Promise<ReaderResult>;
   private readonly port: WritePort;
@@ -107,6 +114,8 @@ export class Desk {
     });
     this.limiter = new Limiter(config.caps, now);
     if (config.mode === "replay") this.loadReplay();
+    this.countersReady = config.mode === "replay";
+    this.bindState();
   }
 
   private loadReplay(): void {
@@ -164,7 +173,7 @@ export class Desk {
       this.recovered.delete(id);
       return;
     }
-    const sent = (dispute.evidences || []).some((item) => item.source === "SUBMITTED_BY_SELLER" && item.evidence_type !== "CREATE");
+    const sent = sellerSentEvidence(dispute);
     if (sent && cents) this.submitted.set(id, cents);
     else this.submitted.delete(id);
   }
@@ -260,7 +269,7 @@ export class Desk {
   async atStakeUsd(): Promise<string> {
     let cents = 0;
     for (const dispute of this.disputes.values()) {
-      if (!this.createdIds.has(dispute.dispute_id) || dispute.status === "RESOLVED") continue;
+      if (!this.createdIds.has(dispute.dispute_id) || !awaitingResponse(dispute)) continue;
       const facts = computeFigures(dispute, this.orderSync(dispute), this.now(), { replay: this.config.mode === "replay" });
       cents += facts.stakeCents || 0;
     }
@@ -322,6 +331,7 @@ export class Desk {
     payload?: PreparedAction;
     readOnly?: boolean;
     waiting?: boolean;
+    reviewing?: boolean;
     message?: string;
   }> {
     const dispute = await this.mustDispute(id);
@@ -332,11 +342,17 @@ export class Desk {
         message: "Read only. This dispute was not created in this demo, so nothing can be sent.",
       };
     }
+    if (sellerSentEvidence(dispute) && dispute.status === "UNDER_REVIEW") {
+      return { reviewing: true, message: "Evidence sent. PayPal is reviewing." };
+    }
     try {
       return { payload: this.build(dispute, action, fields) };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Preview failed.";
-      if (/not asking/i.test(message)) return { waiting: true, message };
+      if (/not asking/i.test(message)) {
+        if (sellerSentEvidence(dispute)) return { reviewing: true, message: "Evidence sent. PayPal is reviewing." };
+        return { waiting: true, message };
+      }
       throw error;
     }
   }
@@ -544,7 +560,40 @@ export class Desk {
         fallback: this.config.nebius.fallbackModel,
       },
       spendTodayUsd: this.limiter.spentUsd.toFixed(6),
+      countersReady: this.countersReady,
     };
+  }
+
+  private bindState(): void {
+    const explicit = this.config.stateFile.trim();
+    const file = explicit || (this.config.mode === "live" ? path.join(os.tmpdir(), "mendcash-spend.json") : "");
+    if (!file) return;
+    this.statePath = file;
+    const saved = readSpendFile(file);
+    if (saved) {
+      this.limiter.hydrate(saved);
+      for (const [id, row] of Object.entries(saved.reads)) this.reads.set(id, row);
+    }
+    this.limiter.setListener(() => this.writeState());
+  }
+
+  private writeState(): void {
+    if (!this.statePath || this.writingState) return;
+    this.writingState = true;
+    try {
+      const spend = this.limiter.exportState();
+      const reads: Record<string, StoredRead> = Object.create(null);
+      for (const [id, row] of this.reads) {
+        if (row.result.usageSource === "rules") continue;
+        reads[id] = row;
+      }
+      const body: SpendFile = { version: 1, ...spend, reads };
+      writeSpendFile(this.statePath, body);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "Could not save the spend file.");
+    } finally {
+      this.writingState = false;
+    }
   }
 
   private async analyze(dispute: FixtureDispute, ip: string): Promise<ReaderResult> {
@@ -558,10 +607,11 @@ export class Desk {
       const micro =
         (result.usageSource === "rules" ? 0 : priceMicroUsd(result.usage, agentPrice)) +
         (result.routerUsage.prompt_tokens ? priceMicroUsd(result.routerUsage, routerPrice) : 0);
-      reservation.commit(micro);
       const reconciled = classifyClaim(dispute.reason, result.buyerText, result.claimClass);
       const stored = { ...result, claimClass: reconciled, claimLabel: claimLabel(reconciled), narrative: stripModelMoney(result.narrative) };
       this.reads.set(dispute.dispute_id, { version: buyerVersion(dispute), result: stored });
+      reservation.commit(micro);
+      if (stored.usageSource !== "rules") this.writeState();
       return stored;
     } catch (error) {
       reservation.cancel();
@@ -617,12 +667,27 @@ export class Desk {
     for (const local of this.disputes.values()) {
       if (!rows.some((row) => row.dispute_id === local.dispute_id)) rows.push(local);
     }
-    if (missing.length) void this.fillMissing(missing);
+    if (missing.length) this.watchCounters(this.fillMissing(missing));
     else if (stale.length && this.now().getTime() - this.lastBulkRefresh > 45_000) {
       this.lastBulkRefresh = this.now().getTime();
       void this.fillMissing(stale.slice(0, 8));
+      if (!this.countersReady) this.countersReady = true;
+    } else if (!this.countersReady) {
+      this.countersReady = true;
     }
     return rows;
+  }
+
+  private watchCounters(job: Promise<void>): void {
+    if (this.config.mode !== "live" || this.countersReady || this.initialScan) return;
+    this.initialScan = job.then(
+      () => {
+        this.countersReady = true;
+      },
+      () => {
+        this.countersReady = true;
+      },
+    );
   }
 
   private listFresh(id: string): boolean {
@@ -650,11 +715,10 @@ export class Desk {
     return all;
   }
 
-  private async fillMissing(ids: string[]): Promise<void> {
-    if (this.filling) return;
-    this.filling = true;
+  private fillMissing(ids: string[]): Promise<void> {
+    if (this.fillJob) return this.fillJob;
     const queue = [...ids];
-    try {
+    this.fillJob = (async () => {
       const workers = Array.from({ length: Math.min(5, queue.length) }, async () => {
         while (queue.length) {
           const id = queue.shift();
@@ -673,9 +737,10 @@ export class Desk {
         }
       });
       await Promise.all(workers);
-    } finally {
-      this.filling = false;
-    }
+    })().finally(() => {
+      this.fillJob = null;
+    });
+    return this.fillJob;
   }
 
   private async fetchDispute(id: string): Promise<FixtureDispute> {
@@ -978,6 +1043,15 @@ export class Desk {
       `Sandbox dispute ${chargeback.dispute_id} was created but is not readable yet. Refresh the inbox in a minute.`,
     );
   }
+}
+
+function sellerSentEvidence(dispute: FixtureDispute): boolean {
+  return (dispute.evidences || []).some((item) => item.source === "SUBMITTED_BY_SELLER" && item.evidence_type !== "CREATE");
+}
+
+function awaitingResponse(dispute: FixtureDispute): boolean {
+  if (sellerSentEvidence(dispute)) return false;
+  return dispute.status === "OPEN" || dispute.status === "WAITING_FOR_SELLER_RESPONSE";
 }
 
 function buyerVersion(dispute: FixtureDispute): string {

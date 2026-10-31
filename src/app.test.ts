@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "crypto";
 import { once } from "node:events";
+import fs from "fs";
 import type { AddressInfo } from "node:net";
+import os from "os";
+import path from "path";
 import { describe, it } from "node:test";
 import type { Server } from "node:http";
 import { readWithRules, type ReaderResult } from "./agent/reader";
@@ -24,6 +28,11 @@ async function listen(app: ReturnType<typeof createApp>["app"]): Promise<{ serve
   await once(server, "listening");
   const address = server.address() as AddressInfo;
   return { server, base: `http://127.0.0.1:${address.port}` };
+}
+
+function cents(value: string): number {
+  const [dollars, fraction = "00"] = value.split(".");
+  return Number(dollars) * 100 + Number(fraction.padEnd(2, "0").slice(0, 2));
 }
 
 describe("http", () => {
@@ -63,6 +72,8 @@ describe("http", () => {
         modeLabel: string;
         recoveredUsd: string;
         submittedUsd: string;
+        atStakeUsd: string;
+        countersReady: boolean;
         csrfToken: string;
       };
       const cookie = (sessionRes.headers.get("set-cookie") || "").split(";")[0];
@@ -71,6 +82,18 @@ describe("http", () => {
       assert.match(session.modeLabel, /Replay/);
       assert.equal(session.recoveredUsd, "0.00");
       assert.equal(session.submittedUsd, "79.25");
+      assert.equal(session.countersReady, true);
+      const list = (await (await fetch(`${base}/api/disputes`)).json()) as {
+        disputes: Array<{ status: string; amount: string | null }>;
+      };
+      let openCents = 0;
+      for (const row of list.disputes) {
+        if ((row.status === "OPEN" || row.status === "WAITING_FOR_SELLER_RESPONSE") && row.amount) {
+          openCents += cents(row.amount);
+        }
+      }
+      assert.equal(session.atStakeUsd, (openCents / 100).toFixed(2));
+      assert.notEqual(session.atStakeUsd, session.submittedUsd);
       const blockedToken = await fetch(`${base}/api/disputes/PP-R-MC-10004/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -106,6 +129,37 @@ describe("http", () => {
           body: JSON.stringify({ action: "provide_evidence" }),
         })
       ).json()) as { payload: { path: string; body: { evidences: Array<{ notes: string }> } } };
+      const reviewed = (await (
+        await fetch(`${base}/api/disputes/PP-R-MC-10001/preview`, {
+          method: "POST",
+          headers: auth,
+          body: JSON.stringify({ action: "provide_evidence" }),
+        })
+      ).json()) as { reviewing?: boolean; waiting?: boolean; payload?: unknown; message?: string };
+      assert.equal(reviewed.reviewing, true);
+      assert.equal(reviewed.waiting, undefined);
+      assert.equal(reviewed.payload, undefined);
+      assert.match(reviewed.message || "", /Evidence sent/);
+      const reviewedOther = (await (
+        await fetch(`${base}/api/disputes/PP-R-MC-10008/preview`, {
+          method: "POST",
+          headers: auth,
+          body: JSON.stringify({ action: "provide_evidence" }),
+        })
+      ).json()) as { reviewing?: boolean; payload?: unknown };
+      assert.equal(reviewedOther.reviewing, true);
+      assert.equal(reviewedOther.payload, undefined);
+      const stillWaiting = (await (
+        await fetch(`${base}/api/disputes/PP-R-MC-10015/preview`, {
+          method: "POST",
+          headers: auth,
+          body: JSON.stringify({ action: "provide_evidence" }),
+        })
+      ).json()) as { waiting?: boolean; reviewing?: boolean; payload?: unknown };
+      assert.equal(stillWaiting.waiting, true);
+      assert.equal(stillWaiting.reviewing, undefined);
+      assert.equal(stillWaiting.payload, undefined);
+
       assert.match(preview.payload.path, /\/provide-evidence$/);
       assert.equal(preview.payload.body.evidences.length, 1);
       assert.match(preview.payload.body.evidences[0].notes, /32\.50 USD/);
@@ -242,5 +296,64 @@ describe("http", () => {
     assert.equal(desk.writes.length, before + 1);
     await desk.approveInvoice("INV2-MC-0042", "create_early_payment_discount");
     assert.equal(desk.writes.length, before + 1);
+  });
+});
+
+describe("spend file", () => {
+  it("keeps today's spend and serves a cached read after a restart", async () => {
+    const file = path.join(os.tmpdir(), `mendcash-test-${randomUUID()}.json`);
+    const config = loadConfig({
+      MENDCASH_MODE: "replay",
+      MENDCASH_STATE_FILE: file,
+      MAX_ANALYSES_PER_IP: "2",
+      MAX_DAILY_USD: "2",
+      PAYPAL_BASE_URL: "https://api-m.sandbox.paypal.com",
+    });
+    let calls = 0;
+    const reader = async (input: Parameters<typeof readWithRules>[0]): Promise<ReaderResult> => {
+      calls += 1;
+      const rules = readWithRules(input);
+      return {
+        ...rules,
+        usageSource: "recorded",
+        model: "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        usage: { prompt_tokens: 1000, completion_tokens: 100 },
+        routerUsage: { prompt_tokens: 0, completion_tokens: 0 },
+        narrative: "Cached narrative for the restart test.",
+      };
+    };
+    try {
+      const desk = new Desk(config, NOW, reader);
+      const first = (await desk.getCase("PP-R-MC-10005", "10.9.9.9", true)) as {
+        draft: { narrative: string } | null;
+        capError: string | null;
+      };
+      assert.equal(calls, 1);
+      assert.equal(first.capError, null);
+      assert.match(first.draft?.narrative || "", /Cached narrative/);
+      await desk.getCase("PP-R-MC-10005", "10.9.9.9", true);
+      assert.equal(calls, 1);
+      assert.equal(desk.session().spendTodayUsd, "0.000420");
+
+      const restarted = new Desk(config, NOW, reader);
+      const cached = (await restarted.getCase("PP-R-MC-10005", "10.9.9.9", true)) as {
+        draft: { narrative: string } | null;
+      };
+      assert.equal(calls, 1);
+      assert.match(cached.draft?.narrative || "", /Cached narrative/);
+      assert.equal(restarted.session().spendTodayUsd, "0.000420");
+      await restarted.getCase("PP-R-MC-10002", "10.9.9.9", true);
+      assert.equal(calls, 2);
+      const blocked = (await restarted.getCase("PP-R-MC-10003", "10.9.9.9", true)) as { capError: string | null };
+      assert.match(blocked.capError || "", /2 analyses/);
+      assert.equal(calls, 2);
+
+      const nextDay = new Desk(config, () => new Date("2026-11-01T00:00:00.000Z"), reader);
+      assert.equal(nextDay.session().spendTodayUsd, "0.000000");
+      await nextDay.getCase("PP-R-MC-10005", "10.9.9.9", true);
+      assert.equal(calls, 2);
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
   });
 });

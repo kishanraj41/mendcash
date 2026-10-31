@@ -30,6 +30,23 @@ describe("caps", () => {
     limiter.takeSimulation("10.1.1.1");
   });
 
+  it("restores today's spend and drops a previous day's spend", () => {
+    const now = () => new Date("2026-10-31T18:00:00.000Z");
+    const caps = loadConfig({ MENDCASH_MODE: "replay", MAX_DAILY_USD: "0.01", MAX_ANALYSES_PER_IP: "2" }).caps;
+    const limiter = new Limiter(caps, now);
+    limiter.hydrate({ day: "2026-10-31", spentMicro: 9_000, ips: { "10.0.0.1": { analyses: 2, simulations: 0, approvals: 0 } } });
+    assert.throws(() => limiter.reserveAnalysis("10.0.0.4", 2_000), /cap/i);
+    assert.throws(() => limiter.reserveAnalysis("10.0.0.1", 100), /analyses/);
+    const rolled = new Limiter(caps, now);
+    rolled.hydrate({ day: "2026-10-30", spentMicro: 9_000, ips: { "10.0.0.1": { analyses: 20, simulations: 0, approvals: 0 } } });
+    rolled.reserveAnalysis("10.0.0.1", 1_000).commit(1_000);
+    assert.equal(rolled.spentUsd, 0.001);
+    const exported = rolled.exportState();
+    assert.equal(exported.day, "2026-10-31");
+    assert.equal(exported.spentMicro, 1_000);
+    assert.equal(exported.ips["10.0.0.1"].analyses, 1);
+  });
+
   it("queues work past the concurrency cap", async () => {
     const limiter = new Limiter(loadConfig({ MENDCASH_MODE: "replay", MAX_CONCURRENCY: "1" }).caps);
     let running = 0;
