@@ -9,6 +9,7 @@ import { describe, it } from "node:test";
 import type { Server } from "node:http";
 import { readWithRules, type ReaderResult } from "./agent/reader";
 import { loadConfig } from "./config";
+import { BUYER_PENDING_DETAIL, BUYER_PENDING_LABEL } from "./services/inbox";
 import { Desk } from "./services/desk";
 import { createApp } from "./server";
 
@@ -238,6 +239,10 @@ describe("http", () => {
       assert.equal(hook.status, 200);
       const hookBody = (await hook.json()) as { replay: boolean };
       assert.equal(hookBody.replay, true);
+      const afterHook = (await (await fetch(`${base}/api/disputes`)).json()) as {
+        disputes: Array<{ disputeId: string; status: string }>;
+      };
+      assert.equal(afterHook.disputes.find((row) => row.disputeId === job.disputeId)?.status, "UNDER_REVIEW");
       const rejected = await fetch(`${base}/webhooks/paypal`, {
         method: "POST",
         headers: auth,
@@ -296,6 +301,43 @@ describe("http", () => {
     assert.equal(desk.writes.length, before + 1);
     await desk.approveInvoice("INV2-MC-0042", "create_early_payment_discount");
     assert.equal(desk.writes.length, before + 1);
+  });
+});
+
+describe("open dispute without buyer text", () => {
+  it("shows a pending state and does not call or cache an analysis", async () => {
+    let calls = 0;
+    const desk = new Desk(replayConfig(), NOW, async (input) => {
+      calls += 1;
+      return readWithRules(input);
+    });
+    const open = {
+      dispute_id: "PP-R-OPEN-EMPTY",
+      reason: "OTHER",
+      status: "OPEN",
+      update_time: "2026-10-31T18:00:00.000Z",
+      dispute_amount: { currency_code: "USD", value: "10.00" },
+      evidences: [],
+      messages: [],
+      links: [],
+    };
+    (desk as unknown as { disputes: Map<string, typeof open> }).disputes.set(open.dispute_id, open);
+    const view = (await desk.getCase(open.dispute_id, "10.2.2.2", true)) as {
+      buyerPending: boolean;
+      claimLabel: string;
+      draft: unknown;
+    };
+    assert.equal(calls, 0);
+    assert.equal(view.buyerPending, true);
+    assert.equal(view.claimLabel, BUYER_PENDING_LABEL);
+    assert.equal(view.draft, null);
+    await desk.getCase(open.dispute_id, "10.2.2.2", true);
+    assert.equal(calls, 0);
+    const rows = await desk.listDisputes();
+    const row = rows.find((item) => item.disputeId === open.dispute_id);
+    assert.equal(row?.claimLabel, BUYER_PENDING_LABEL);
+    assert.equal(row?.snippet, BUYER_PENDING_DETAIL);
+    assert.equal(row?.status, "OPEN");
   });
 });
 

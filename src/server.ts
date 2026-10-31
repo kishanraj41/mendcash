@@ -6,7 +6,7 @@ import { loadConfig, type AppConfig } from "./config";
 import { CapError } from "./caps/limiter";
 import { Desk } from "./services/desk";
 import type { ActionName } from "./approval/payload";
-import { nodeTooOld } from "./runtime";
+import { loadLocalEnv, nodeTooOld } from "./runtime";
 import { StatusError } from "./errors";
 
 const ACTIONS = new Set<ActionName>([
@@ -255,6 +255,7 @@ function paypalHeaders(req: Request): Record<string, string | undefined> {
 }
 
 function main(): void {
+  loadLocalEnv();
   const tooOld = nodeTooOld();
   if (tooOld) {
     console.error(tooOld);

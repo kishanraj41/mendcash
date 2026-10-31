@@ -29,6 +29,7 @@ export type DisputeRow = {
   simulatedDeadline: boolean;
   countdown: Countdown;
   snippet: string;
+  pending?: boolean;
 };
 
 export type Session = {
@@ -62,6 +63,7 @@ export type CaseView = {
     update_time?: string;
   };
   buyerText: string;
+  buyerPending?: boolean;
   injection: { detected: boolean; patterns: string[] };
   claimClass: string;
   claimLabel: string;

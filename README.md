@@ -137,21 +137,16 @@ cd mendcash
 npm ci
 cp .env.example .env        # add PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, NEBIUS_API_KEY
 npm run build
-node --env-file=.env dist/server.js
+npm start
 ```
 
-Open <http://localhost:3000>. The banner shows **PayPal sandbox** in live mode, or **Replay** without keys.
-
-> [!NOTE]
-> The app reads `process.env` and does not load `.env` by itself. `node --env-file=.env` handles that for the server. For the npm scripts, export the file into your shell first: `set -a; . ./.env; set +a`.
+Open <http://localhost:3000>. The banner shows **PayPal sandbox** in live mode, or **Replay** without keys. `npm start` and the other npm scripts load `.env` themselves. A variable already set in the environment is left as it is.
 
 Check your keys and seed the sandbox:
 
 ```bash
-set -a; . ./.env; set +a
 npm run smoke                # auths to PayPal and Nebius; prints set/missing, never secrets
 SEED_LIVE=1 npm run seed     # 32 sandbox card orders + chargebacks, 5 with planted injections
-npm start                    # same as node dist/server.js, with the env already exported
 ```
 
 New sandbox disputes take about 40 seconds to show up. Only reason code **4853** usually becomes actionable in the sandbox, a few minutes after it is created; that is when **Approve and send** turns on.

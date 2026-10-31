@@ -22,6 +22,7 @@ import { callToolkit, disputeItems, unwrap } from "../paypal/toolkit";
 import { CATALOG, REASON_OPTIONS, reasonByCode, type CatalogItem } from "../scenario/catalog";
 import { buildScenario, type FixtureDispute, type FixtureOrder } from "../scenario/planted";
 import { isDemoReference } from "../demo-ref";
+import { BUYER_PENDING_DETAIL, BUYER_PENDING_LABEL, buyerTextPending, listStatusTtlMs, newerListStatus, shouldAnalyzeBuyer } from "./inbox";
 import { previewInvoice, type Invoice, type InvoicePreview } from "./invoices";
 import { StatusError } from "../errors";
 
@@ -64,8 +65,8 @@ export class Desk {
   private readonly orders = new Map<string, FixtureOrder>();
   private readonly captureToOrder = new Map<string, string>();
   private readonly reads = new Map<string, { version: string; result: ReaderResult }>();
-  private lastBulkRefresh = 0;
   private readonly failedAt = new Map<string, number>();
+  private readonly fillQueue: string[] = [];
   private readonly jobs = new Map<string, SimJob & { done: Promise<void> }>();
   private readonly timeline: TimelineEvent[] = [];
   private readonly fetchedAt = new Map<string, number>();
@@ -249,6 +250,7 @@ export class Desk {
       const order = this.orderSync(dispute);
       const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
       const text = buyerTextOf(dispute);
+      const pending = buyerTextPending(dispute);
       return {
         disputeId: dispute.dispute_id,
         reason: dispute.reason,
@@ -259,8 +261,9 @@ export class Desk {
         deadline: facts.deadline,
         simulatedDeadline: facts.simulatedDeadline,
         countdown: facts.countdown,
-        snippet: text.slice(0, 110),
-        claimLabel: claimLabel(classifyClaim(dispute.reason, text, null)),
+        snippet: pending ? BUYER_PENDING_DETAIL : text.slice(0, 110),
+        claimLabel: pending ? BUYER_PENDING_LABEL : claimLabel(classifyClaim(dispute.reason, text, null)),
+        pending,
         updated: dispute.update_time,
       };
     });
@@ -282,20 +285,22 @@ export class Desk {
     const member = this.noteDemo(dispute, order);
     const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
     const plan = planEvidence(dispute, order, refundIdOf(order, dispute));
+    const pending = buyerTextPending(dispute);
+    if (pending && this.reads.delete(dispute.dispute_id)) this.writeState();
     const version = buyerVersion(dispute);
-    const cached = this.reads.get(dispute.dispute_id);
+    const cached = pending ? undefined : this.reads.get(dispute.dispute_id);
     const cacheHit = cached?.version === version ? cached.result : null;
     let draft: ReaderResult | null = cacheHit ?? (analyze === false ? cached?.result ?? null : null);
     let capError: string | null = null;
-    const wantModel = !cacheHit && analyze !== false && (analyze === true || (analyze === "auto" && member));
-    if (wantModel && !cacheHit) {
+    const wantModel = shouldAnalyzeBuyer(dispute, analyze, member, Boolean(cacheHit));
+    if (wantModel) {
       try {
         draft = await this.analyze(dispute, ip);
       } catch (error) {
         capError = error instanceof Error ? error.message : "Analysis failed.";
         if (!draft) draft = readWithRules(dispute);
       }
-    } else if (!draft) {
+    } else if (!draft && !pending) {
       draft = readWithRules(dispute);
     }
     const narrative = draft ? stripModelMoney(draft.narrative) : "";
@@ -309,9 +314,10 @@ export class Desk {
       dispute,
       order,
       buyerText: buyerTextOf(dispute),
+      buyerPending: pending,
       injection: draft?.injection || { detected: false, patterns: [] },
       claimClass,
-      claimLabel: claimLabel(claimClass),
+      claimLabel: pending ? BUYER_PENDING_LABEL : claimLabel(claimClass),
       draft: draft ? { ...this.draftMeta(draft), narrative } : null,
       capError,
       plan,
@@ -531,6 +537,7 @@ export class Desk {
         };
       }
       dispute.update_time = row.at;
+      this.syncMoney(dispute);
     }
     return row;
   }
@@ -656,6 +663,14 @@ export class Desk {
       if (!id) continue;
       const cached = this.disputes.get(id);
       if (cached) {
+        const listedStatus = typeof row.status === "string" ? row.status : "";
+        const listedAt = typeof row.update_time === "string" ? row.update_time : "";
+        const next = newerListStatus(cached, { status: listedStatus, update_time: listedAt });
+        if (next.status !== cached.status || (next.update_time && next.update_time !== cached.update_time)) {
+          cached.status = next.status;
+          if (next.update_time) cached.update_time = next.update_time;
+          this.syncMoney(cached);
+        }
         rows.push(cached);
         if (!this.listFresh(id)) stale.push(id);
       } else {
@@ -668,13 +683,8 @@ export class Desk {
       if (!rows.some((row) => row.dispute_id === local.dispute_id)) rows.push(local);
     }
     if (missing.length) this.watchCounters(this.fillMissing(missing));
-    else if (stale.length && this.now().getTime() - this.lastBulkRefresh > 45_000) {
-      this.lastBulkRefresh = this.now().getTime();
-      void this.fillMissing(stale.slice(0, 8));
-      if (!this.countersReady) this.countersReady = true;
-    } else if (!this.countersReady) {
-      this.countersReady = true;
-    }
+    if (stale.length) void this.fillMissing(stale);
+    if (!missing.length && !this.countersReady) this.countersReady = true;
     return rows;
   }
 
@@ -692,8 +702,9 @@ export class Desk {
 
   private listFresh(id: string): boolean {
     const at = this.fetchedAt.get(id);
-    if (at === undefined || !this.disputes.has(id)) return false;
-    return this.now().getTime() - at < 60_000;
+    const dispute = this.disputes.get(id);
+    if (at === undefined || !dispute) return false;
+    return this.now().getTime() - at < listStatusTtlMs(dispute.status);
   }
 
   private async listDisputePages(): Promise<Array<Record<string, unknown>>> {
@@ -716,31 +727,35 @@ export class Desk {
   }
 
   private fillMissing(ids: string[]): Promise<void> {
+    for (const id of ids) {
+      if (id && !this.fillQueue.includes(id)) this.fillQueue.push(id);
+    }
     if (this.fillJob) return this.fillJob;
-    const queue = [...ids];
+    const workers = Math.min(5, Math.max(1, this.fillQueue.length));
     this.fillJob = (async () => {
-      const workers = Array.from({ length: Math.min(5, queue.length) }, async () => {
-        while (queue.length) {
-          const id = queue.shift();
-          if (!id || this.fresh(id)) continue;
-          try {
-            const dispute = await this.fetchDispute(id);
-            this.failedAt.delete(id);
-            if (!this.createdIds.has(id)) {
-              const order = await this.orderFor(dispute, false);
-              this.noteDemo(dispute, order);
-            }
-          } catch (error) {
-            this.failedAt.set(id, this.now().getTime());
-            console.error(error instanceof Error ? error.message : "Dispute refresh failed.");
-          }
-        }
-      });
-      await Promise.all(workers);
+      await Promise.all(Array.from({ length: workers }, () => this.drainFill()));
     })().finally(() => {
       this.fillJob = null;
     });
     return this.fillJob;
+  }
+
+  private async drainFill(): Promise<void> {
+    while (this.fillQueue.length) {
+      const id = this.fillQueue.shift();
+      if (!id || this.fresh(id)) continue;
+      try {
+        const dispute = await this.fetchDispute(id);
+        this.failedAt.delete(id);
+        if (!this.createdIds.has(id)) {
+          const order = await this.orderFor(dispute, false);
+          this.noteDemo(dispute, order);
+        }
+      } catch (error) {
+        this.failedAt.set(id, this.now().getTime());
+        console.error(error instanceof Error ? error.message : "Dispute refresh failed.");
+      }
+    }
   }
 
   private async fetchDispute(id: string): Promise<FixtureDispute> {

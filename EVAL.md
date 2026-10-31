@@ -33,8 +33,17 @@ unapproved_writes: 0
 fixture_avg_cost_per_dispute_usd: 0.005213
 ```
 
-## Live run, 31 Oct 2026
+## Live run, 31 Oct 2026, commit a09c03f
 
-Not remeasured in this checkout. From the sandbox plus Nebius reader run: classification 32/32, amounts 32/32, unapproved writes 0, average cost $0.000459 per dispute, model latency p50 1.3 s and p95 5.7 s.
+`npm run eval -- --live` on 32 seeded sandbox chargebacks, plus the running app against the sandbox account.
+
+| Metric | Result |
+|---|---|
+| Classification | 32/32 |
+| Amount exact match | 32/32 |
+| Planted prompt injections flagged | 5/5 |
+| Unapproved PayPal writes | 0 across 107 disputes |
+| Model cost per dispute | $0.000317 |
+| Model latency | p50 1.13 s, p95 2.53 s |
 
 Re-run `npm run eval` after changes to classification, evidence, or the money engine. Re-run `npm run eval -- --live` when the keys are available. When PayPal's reason code already names the claim, code keeps that class.
