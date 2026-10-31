@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="120" viewBox="0 0 480 120" role="img" aria-labelledby="t">
+  <title id="t">MendCash</title>
+  <style>
+    .mend { fill: #1b4334; } .cash { fill: #8a4b12; }
+    @media (prefers-color-scheme: dark) { .mend { fill: #e7f3ec; } .cash { fill: #e0b067; } }
+  </style>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2a6249"/>
+      <stop offset="1" stop-color="#1b4334"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="10" width="100" height="100" rx="26" fill="url(#g)"/>
+  <!-- a tear in the money, mended with three stitches -->
+  <path d="M22 64 L38 48 L54 70 L72 46 L90 60" fill="none" stroke="#f4eee4" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <g stroke="#e0b067" stroke-width="5" stroke-linecap="round">
+    <line x1="33" y1="34" x2="40" y2="78"/>
+    <line x1="55" y1="36" x2="55" y2="84"/>
+    <line x1="77" y1="34" x2="70" y2="78"/>
+  </g>
+  <text x="128" y="80" font-family="Georgia, 'Times New Roman', serif" font-size="62" font-weight="700" letter-spacing="-1.5"><tspan class="mend">Mend</tspan><tspan class="cash">Cash</tspan></text>
+</svg>
