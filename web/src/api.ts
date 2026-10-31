@@ -149,7 +149,8 @@ export const api = {
   disputes: () => fetch("/api/disputes").then((r) => parse<{ disputes: DisputeRow[]; replay: boolean }>(r)),
   case: (id: string, analyze = true) =>
     fetch(`/api/disputes/${id}${analyze ? "" : "?analyze=0"}`).then((r) => parse<CaseView>(r)),
-  preview: (id: string, body: Record<string, string>) => post<{ payload: Payload }>(`/api/disputes/${id}/preview`, body),
+  preview: (id: string, body: Record<string, string>) =>
+    post<{ payload?: Payload; readOnly?: boolean; waiting?: boolean; message?: string }>(`/api/disputes/${id}/preview`, body),
   approve: (id: string, body: Record<string, string>) =>
     post<{ recoveredUsd?: string; submittedUsd?: string; payload: Payload; replay: boolean }>(`/api/disputes/${id}/approve`, body),
   catalog: () => fetch("/api/catalog").then((r) => parse<Catalog>(r)),
