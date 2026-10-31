@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { classifyClaim, claimLabel } from "../agent/classify";
 import { buyerTextOf, planEvidence, refundIdOf } from "../agent/evidence";
 import { stripModelMoney } from "../agent/injection";
@@ -214,17 +214,23 @@ export class Desk {
       label:
         draft.usageSource === "model"
           ? draft.model
-          : "Rules draft. Replay does not call the model.",
+          : this.config.mode === "replay"
+            ? "Rules draft. Replay does not call the model."
+            : "Rules draft. The model runs on disputes this demo created.",
     };
   }
 
-  private assertDemoDispute(dispute: FixtureDispute, order: FixtureOrder | null): void {
-    if (this.createdIds.has(dispute.dispute_id)) return;
+  private noteDemo(dispute: FixtureDispute, order: FixtureOrder | null): boolean {
+    if (this.createdIds.has(dispute.dispute_id)) return true;
     const reference = order?.purchase_units?.[0]?.reference_id || "";
-    if (isDemoReference(reference)) {
-      this.createdIds.add(dispute.dispute_id);
-      return;
-    }
+    if (!isDemoReference(reference)) return false;
+    this.createdIds.add(dispute.dispute_id);
+    this.syncMoney(dispute);
+    return true;
+  }
+
+  private assertDemoDispute(dispute: FixtureDispute, order: FixtureOrder | null): void {
+    if (this.noteDemo(dispute, order)) return;
     throw new StatusError("This demo only sends PayPal writes for disputes MendCash created. Nothing was sent.", 403);
   }
 
@@ -264,14 +270,15 @@ export class Desk {
   async getCase(id: string, ip: string, analyze: boolean | "auto" = "auto"): Promise<Record<string, unknown>> {
     const dispute = await this.mustDispute(id);
     const order = await this.orderFor(dispute, this.config.mode === "live");
+    const member = this.noteDemo(dispute, order);
     const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
     const plan = planEvidence(dispute, order, refundIdOf(order, dispute));
-    const version = dispute.update_time || dispute.dispute_id;
+    const version = buyerVersion(dispute);
     const cached = this.reads.get(dispute.dispute_id);
     const cacheHit = cached?.version === version ? cached.result : null;
-    let draft: ReaderResult | null = cacheHit ?? cached?.result ?? null;
+    let draft: ReaderResult | null = cacheHit ?? (analyze === false ? cached?.result ?? null : null);
     let capError: string | null = null;
-    const wantModel = !cacheHit && (analyze === true || (analyze === "auto" && this.createdIds.has(dispute.dispute_id)));
+    const wantModel = !cacheHit && analyze !== false && (analyze === true || (analyze === "auto" && member));
     if (wantModel && !cacheHit) {
       try {
         draft = await this.analyze(dispute, ip);
@@ -311,10 +318,27 @@ export class Desk {
     };
   }
 
-  async preview(id: string, action: ActionName, fields: { partialAmount?: string; carrier?: string; trackingNumber?: string }): Promise<PreparedAction> {
+  async preview(id: string, action: ActionName, fields: { partialAmount?: string; carrier?: string; trackingNumber?: string }): Promise<{
+    payload?: PreparedAction;
+    readOnly?: boolean;
+    waiting?: boolean;
+    message?: string;
+  }> {
     const dispute = await this.mustDispute(id);
-    await this.orderFor(dispute, this.config.mode === "live");
-    return this.build(dispute, action, fields);
+    const order = await this.orderFor(dispute, this.config.mode === "live");
+    if (!this.noteDemo(dispute, order)) {
+      return {
+        readOnly: true,
+        message: "Read only. This dispute was not created in this demo, so nothing can be sent.",
+      };
+    }
+    try {
+      return { payload: this.build(dispute, action, fields) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Preview failed.";
+      if (/not asking/i.test(message)) return { waiting: true, message };
+      throw error;
+    }
   }
 
   async approve(
@@ -537,7 +561,7 @@ export class Desk {
       reservation.commit(micro);
       const reconciled = classifyClaim(dispute.reason, result.buyerText, result.claimClass);
       const stored = { ...result, claimClass: reconciled, claimLabel: claimLabel(reconciled), narrative: stripModelMoney(result.narrative) };
-      this.reads.set(dispute.dispute_id, { version: dispute.update_time || dispute.dispute_id, result: stored });
+      this.reads.set(dispute.dispute_id, { version: buyerVersion(dispute), result: stored });
       return stored;
     } catch (error) {
       reservation.cancel();
@@ -636,8 +660,12 @@ export class Desk {
           const id = queue.shift();
           if (!id || this.fresh(id)) continue;
           try {
-            await this.fetchDispute(id);
+            const dispute = await this.fetchDispute(id);
             this.failedAt.delete(id);
+            if (!this.createdIds.has(id)) {
+              const order = await this.orderFor(dispute, false);
+              this.noteDemo(dispute, order);
+            }
           } catch (error) {
             this.failedAt.set(id, this.now().getTime());
             console.error(error instanceof Error ? error.message : "Dispute refresh failed.");
@@ -950,6 +978,10 @@ export class Desk {
       `Sandbox dispute ${chargeback.dispute_id} was created but is not readable yet. Refresh the inbox in a minute.`,
     );
   }
+}
+
+function buyerVersion(dispute: FixtureDispute): string {
+  return createHash("sha256").update(buyerTextOf(dispute)).digest("hex").slice(0, 16);
 }
 
 function stepLabel(id: string, replay: boolean): string {

@@ -96,8 +96,8 @@ export function createApp(options: AppOptions = {}) {
     try {
       requireCsrf(req, sessions);
       const action = actionOf(req.body?.action);
-      const prepared = await desk.preview(req.params.id, action, fieldsOf(req.body));
-      res.json({ replay: config.mode === "replay", payload: prepared });
+      const preview = await desk.preview(req.params.id, action, fieldsOf(req.body));
+      res.json({ replay: config.mode === "replay", ...preview });
     } catch (error) {
       next(error);
     }
@@ -223,8 +223,9 @@ function ensureSession(req: Request, res: Response, sessions: Map<string, Sessio
 function requireCsrf(req: Request, sessions: Map<string, SessionRec>): void {
   const sid = readCookie(req, "mendcash_sid");
   const rec = sid ? sessions.get(sid) : undefined;
-  if (!rec || req.header("x-mendcash-csrf") !== rec.csrf) {
-    throw new Error("Missing session token. Reload the page.");
+  if (!rec) throw new Error("Missing session token. Reload the page.");
+  if (req.header("x-mendcash-csrf") !== rec.csrf) {
+    throw new Error("Invalid session token. Reload the page.");
   }
   rec.seen = Date.now();
 }

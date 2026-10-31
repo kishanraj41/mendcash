@@ -53,6 +53,9 @@ export function App() {
     api.case(selected)
       .then((view) => {
         if (!cancel) setCaseView(view);
+        api.session().then((next) => {
+          if (!cancel) setSession(next);
+        }).catch(() => undefined);
       })
       .catch((err: Error) => setError(err.message))
       .finally(() => {
@@ -159,6 +162,8 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
   const [tracking, setTracking] = useState(view.plan.tracking?.number || "");
   const [payload, setPayload] = useState<Payload | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [readOnly, setReadOnly] = useState<string | null>(null);
+  const [waiting, setWaiting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [sentAction, setSentAction] = useState<Action | null>(null);
   const [busy, setBusy] = useState(false);
@@ -185,14 +190,30 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
     let cancel = false;
     api.preview(view.dispute.dispute_id, body)
       .then((res) => {
-        if (!cancel) {
-          setPayload(res.payload);
+        if (cancel) return;
+        if (res.readOnly) {
+          setPayload(null);
+          setReadOnly(res.message || "Read only. This dispute was not created in this demo.");
+          setWaiting(false);
           setPreviewError(null);
+          return;
         }
+        setReadOnly(null);
+        if (res.waiting || !res.payload) {
+          setPayload(null);
+          setWaiting(true);
+          setPreviewError(null);
+          return;
+        }
+        setPayload(res.payload);
+        setWaiting(false);
+        setPreviewError(null);
       })
       .catch((err: Error) => {
         if (!cancel) {
           setPayload(null);
+          setWaiting(false);
+          setReadOnly(null);
           setPreviewError(err.message);
         }
       });
@@ -308,9 +329,17 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
               </label>
             </>
           )}
-          {waitingForPayPal(view.dispute.status, previewError, sentAction) ? (
+          {sentAction ? (
+            <p className="meta">Evidence sent. PayPal is reviewing.</p>
+          ) : readOnly ? (
+            <p className="meta">{readOnly}</p>
+          ) : waiting && canBecomeActionable(view.dispute.external_reason_code, view.replay) ? (
             <p className="meta">Waiting for PayPal to ask for evidence. In the sandbox this usually takes about 4 minutes after a simulated chargeback.</p>
-          ) : previewError ? <p className="error">{previewError}</p> : null}
+          ) : waiting ? (
+            <p className="meta">PayPal has not asked for evidence on this dispute. In the sandbox, only reason code 4853 usually becomes actionable.</p>
+          ) : previewError ? (
+            <p className="error">{previewError}</p>
+          ) : null}
           {payload && (
             <>
               <p className="path">{payload.method} {payload.path}</p>
@@ -319,7 +348,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
             </>
           )}
           {result && <p className="okmsg">{result}</p>}
-          <button className={action === "accept_claim" || action === "partial_refund" ? "danger" : "primary"} type="button" disabled={!payload || busy || sentAction === action} onClick={() => approve().catch(() => undefined)}>
+          <button className={action === "accept_claim" || action === "partial_refund" ? "danger" : "primary"} type="button" disabled={!payload || busy || sentAction === action || Boolean(readOnly)} onClick={() => approve().catch(() => undefined)}>
             {busy ? "Sending…" : "Approve and send"}
           </button>
         </aside>
@@ -446,10 +475,8 @@ function softWrap(value: string) {
   );
 }
 
-function waitingForPayPal(status: string, previewError: string | null, sentAction: Action | null): boolean {
-  if (sentAction || !previewError) return false;
-  if (!/not asking/i.test(previewError)) return false;
-  return status === "OPEN" || status === "UNDER_REVIEW";
+function canBecomeActionable(reasonCode: string | undefined, replay: boolean): boolean {
+  return replay || reasonCode === "4853";
 }
 
 function prettyReason(reason: string): string {

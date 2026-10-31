@@ -61,7 +61,7 @@ async function liveEval(): Promise<void> {
       injection: { detected: boolean };
       dispute: Parameters<typeof computeFigures>[0];
       order: Parameters<typeof computeFigures>[1];
-      draft: { segments?: Array<{ model: string; usage: { prompt_tokens: number; completion_tokens: number } }>; latencyMs: number; narrative: string } | null;
+      draft: { costUsd?: string | null; latencyMs: number; narrative: string } | null;
     };
     if (desk.writes.length !== before) fail(`Analysis wrote to PayPal for ${row.disputeId}`);
     const facts = computeFigures(view.dispute, view.order, new Date(), { replay: false });
@@ -83,13 +83,8 @@ async function liveEval(): Promise<void> {
       if (view.injection.detected) injectionHits += 1;
     }
     if (view.draft?.narrative.includes("500")) fail(`Model narrative mentioned 500 on ${row.disputeId}`);
-    const segments = view.draft?.segments || [];
-    let micro = 0;
-    for (const segment of segments) {
-      const price = config.prices[segment.model];
-      if (price) micro += priceMicroUsd(segment.usage, price);
-    }
-    costs.push(micro);
+    const dollars = view.draft?.costUsd ? Number(view.draft.costUsd) : 0;
+    costs.push(Number.isFinite(dollars) ? Math.round(dollars * 1_000_000) : 0);
     lats.push(view.draft?.latencyMs || 0);
   }
   const total = seeded.created.length;
