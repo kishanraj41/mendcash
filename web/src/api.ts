@@ -45,6 +45,7 @@ export type Session = {
   caps: { maxDailyUsd: number; analysesPerIp: number; simulationsPerIp: number };
   models: { agent: string; router: string; fallback: string };
   spendTodayUsd: string;
+  countersReady: boolean;
 };
 
 export type CaseView = {
@@ -150,7 +151,7 @@ export const api = {
   case: (id: string, analyze = true) =>
     fetch(`/api/disputes/${id}${analyze ? "" : "?analyze=0"}`).then((r) => parse<CaseView>(r)),
   preview: (id: string, body: Record<string, string>) =>
-    post<{ payload?: Payload; readOnly?: boolean; waiting?: boolean; message?: string }>(`/api/disputes/${id}/preview`, body),
+    post<{ payload?: Payload; readOnly?: boolean; waiting?: boolean; reviewing?: boolean; message?: string }>(`/api/disputes/${id}/preview`, body),
   approve: (id: string, body: Record<string, string>) =>
     post<{ recoveredUsd?: string; submittedUsd?: string; payload: Payload; replay: boolean }>(`/api/disputes/${id}/approve`, body),
   catalog: () => fetch("/api/catalog").then((r) => parse<Catalog>(r)),

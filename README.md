@@ -15,7 +15,7 @@ Mastercard’s 2025 estimate is that a chargeback costs a merchant **$128 on ave
 3. MendCash places a sandbox card order (`POST /v2/checkout/orders` with `payment_source.card`, `Prefer: return=representation`) and raises a sandbox chargeback (`POST /v2/customer-support/process-chargeback`). New disputes take about 40 seconds to show up. The screen keeps a progress log and keeps polling PayPal until the status changes. Reason code **4853** is the one that becomes actionable in the sandbox. Once PayPal sends `seller_response_due_date`, that date is shown as PayPal's deadline. Replay mode still labels its fixture deadlines simulated.
 4. The inbox also fills from `CUSTOMER.DISPUTE.CREATED` and `CUSTOMER.DISPUTE.UPDATED` webhooks. If an event is late, the inbox polls disputes directly.
 5. The case shows the buyer text, the evidence PayPal asked for, a draft, and an approval card with the exact payload. Approving is what calls `provide-evidence`, adds tracking, or accepts the claim. A partial refund is capped by the dispute amount, PayPal’s allowed refund, and `MAX_PARTIAL_REFUND_USD` (default $200).
-6. **Submitted** is the sum of disputes where evidence was sent and PayPal has not resolved them. **Recovered** counts only a resolution in the seller's favor. Every figure names the PayPal field and record id it came from.
+6. **Submitted** is evidence already sent, across demo disputes in this sandbox, until PayPal resolves them. **Recovered** counts only a resolution in the seller's favor. **Open stake** is demo disputes still awaiting a seller response, not the whole unresolved balance. After a cold start those three stay on Loading until the inbox has checked which disputes belong to this demo. Every figure names the PayPal field and record id it came from.
 
 Without PayPal keys the same screens run in **replay**. The banner says so. Replay never calls PayPal and must not be described as a live chargeback.
 
@@ -93,8 +93,9 @@ The server reads `PORT` (default 3000). Open `http://localhost:3000`.
 | `NEBIUS_BASE_URL` | Default `https://api.tokenfactory.nebius.com/v1`. |
 | `AGENT_MODEL`, `ROUTER_MODEL`, `FALLBACK_MODEL` | Model ids. |
 | `MENDCASH_MODE` | `replay` or `live`. Default is live when PayPal keys exist, otherwise replay. |
-| `MAX_DAILY_USD` | Default `2`. |
-| `MAX_ANALYSES_PER_IP` | Default `20` per day. |
+| `MAX_DAILY_USD` | Default `2`. This is the money stop. |
+| `MAX_ANALYSES_PER_IP` | Default `400` fresh reads per address per day. A repeat of the same buyer text is free for every visitor and does not count. |
+| `MENDCASH_STATE_FILE` | Optional. Live mode saves today's spend and the shared analysis cache to this path, or to the OS temp dir when unset. A process restart keeps the $2 cap and does not pay again for unchanged buyer text. |
 | `MAX_SIMULATIONS_PER_IP` | Default `5` per day. |
 | `MAX_CONCURRENCY` | Default `4`. |
 | `MAX_PARTIAL_REFUND_USD` | Default `200`. |
@@ -107,6 +108,8 @@ Do not commit `.env`. `.env.example` has empty secrets.
 ## Hosting
 
 `render.yaml` is a free web service. Secrets are `sync: false`. `GET /health` and `GET /healthz` do not call PayPal or the model. The Dockerfile builds the UI and runs `node dist/server.js`.
+
+The $2 daily cap and the shared analysis cache are written to a small JSON file on the instance. A process restart on that same disk keeps them. Render's free tier replaces the disk when the service spins down or deploys, so a cold instance starts the day over. That file holds spend, per-address counts, and cached reads. It does not hold API keys.
 
 After the service has a URL, set the GitHub Actions repository variable `DEMO_URL` to that origin (no path). `.github/workflows/keepalive.yml` requests `DEMO_URL/health` every 10 minutes so the free instance stays awake. The workflow fails until the variable is set.
 

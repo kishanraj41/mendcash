@@ -38,6 +38,8 @@ export type AppConfig = {
     maxSessionRefundUsd: number;
     reserveUsd: number;
   };
+  /** Empty unless MENDCASH_STATE_FILE is set. Live mode still persists under the OS temp dir. */
+  stateFile: string;
 };
 
 const BANNED = "Qwen3-235B";
@@ -137,13 +139,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     prices,
     caps: {
       maxDailyUsd: num(env.MAX_DAILY_USD, 2),
-      analysesPerIp: num(env.MAX_ANALYSES_PER_IP, 20),
+      // Repeat views of the same buyer text are free. 400 lets one visitor open the seeded inbox.
+      // MAX_DAILY_USD is the money stop.
+      analysesPerIp: num(env.MAX_ANALYSES_PER_IP, 400),
       simulationsPerIp: num(env.MAX_SIMULATIONS_PER_IP, 5),
       concurrency: Math.max(1, num(env.MAX_CONCURRENCY, 4)),
       maxPartialRefundUsd: num(env.MAX_PARTIAL_REFUND_USD, 200),
       maxSessionRefundUsd: num(env.MAX_SESSION_REFUND_USD, 500),
       reserveUsd: 0.008,
     },
+    stateFile: env.MENDCASH_STATE_FILE?.trim() || "",
   };
 }
 

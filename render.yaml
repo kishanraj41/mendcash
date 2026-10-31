@@ -13,8 +13,9 @@ services:
         value: production
       - key: MAX_DAILY_USD
         value: "2"
+      # Cached buyer text is free. 400 covers the seeded inbox. The $2 cap is the stop.
       - key: MAX_ANALYSES_PER_IP
-        value: "20"
+        value: "400"
       - key: MAX_SIMULATIONS_PER_IP
         value: "5"
       - key: MAX_CONCURRENCY

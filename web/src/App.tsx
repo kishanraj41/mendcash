@@ -21,7 +21,7 @@ export function App() {
   const [simulateOpen, setSimulateOpen] = useState(false);
   const [loadingCase, setLoadingCase] = useState(false);
 
-  async function refreshLists() {
+  async function refreshLists(): Promise<boolean> {
     const [nextSession, list, invoiceView, nextCatalog] = await Promise.all([
       api.session(),
       api.disputes(),
@@ -32,14 +32,30 @@ export function App() {
     setRows(list.disputes);
     setInvoices(invoiceView);
     setCatalog(nextCatalog);
+    return nextSession.countersReady;
   }
 
   useEffect(() => {
-    refreshLists().catch((err: Error) => setError(err.message));
-    const timer = window.setInterval(() => {
-      refreshLists().catch(() => undefined);
-    }, 12000);
-    return () => window.clearInterval(timer);
+    let cancel = false;
+    let timer = 0;
+    let started = false;
+    const tick = () => {
+      refreshLists()
+        .then((ready) => {
+          started = true;
+          if (cancel) return;
+          timer = window.setTimeout(tick, ready ? 12000 : 2000);
+        })
+        .catch((err: Error) => {
+          if (!started && !cancel) setError(err.message);
+          if (!cancel) timer = window.setTimeout(tick, 4000);
+        });
+    };
+    tick();
+    return () => {
+      cancel = true;
+      window.clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -85,18 +101,18 @@ export function App() {
         <div className="top-actions">
           <div className="stake">
             <span>Submitted</span>
-            <strong>${session?.submittedUsd ?? "—"}</strong>
-            <small>this demo, evidence sent</small>
+            <strong className={session?.countersReady ? undefined : "pending"}>{counterText(session?.countersReady, session?.submittedUsd)}</strong>
+            <small>evidence sent, this sandbox</small>
           </div>
           <div className="recovered">
             <span>Recovered</span>
-            <strong>${session?.recoveredUsd ?? "—"}</strong>
+            <strong className={session?.countersReady ? undefined : "pending"}>{counterText(session?.countersReady, session?.recoveredUsd)}</strong>
             <small>resolved for the seller</small>
           </div>
           <div className="stake">
             <span>Open stake</span>
-            <strong>${session?.atStakeUsd ?? "—"}</strong>
-            <small>this demo, still open</small>
+            <strong className={session?.countersReady ? undefined : "pending"}>{counterText(session?.countersReady, session?.atStakeUsd)}</strong>
+            <small>awaiting a response, this sandbox</small>
           </div>
           <button className="primary" type="button" onClick={() => setSimulateOpen(true)}>
             Simulate a chargeback
@@ -105,7 +121,7 @@ export function App() {
       </header>
       {session && (
         <div className="banner">
-          {session.modeLabel} Daily model cap ${session.caps.maxDailyUsd.toFixed(2)}. Spent today ${session.spendTodayUsd}.
+          {session.modeLabel} Counters are across demo disputes in this sandbox. Daily model cap ${session.caps.maxDailyUsd.toFixed(2)}. Spent today ${session.spendTodayUsd}.
           {session.mode === "live" && !session.webhooksConfigured ? " Webhooks are off, so status refreshes by polling." : ""}
         </div>
       )}
@@ -164,6 +180,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [readOnly, setReadOnly] = useState<string | null>(null);
   const [waiting, setWaiting] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [sentAction, setSentAction] = useState<Action | null>(null);
   const [busy, setBusy] = useState(false);
@@ -174,6 +191,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
     setTracking(view.plan.tracking?.number || "");
     setResult(null);
     setSentAction(null);
+    setReviewing(false);
   }, [view.dispute.dispute_id, view.plan.tracking?.carrier, view.plan.tracking?.number]);
 
   const body = useMemo(() => {
@@ -195,10 +213,19 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
           setPayload(null);
           setReadOnly(res.message || "Read only. This dispute was not created in this demo.");
           setWaiting(false);
+          setReviewing(false);
           setPreviewError(null);
           return;
         }
         setReadOnly(null);
+        if (res.reviewing) {
+          setPayload(null);
+          setWaiting(false);
+          setReviewing(true);
+          setPreviewError(null);
+          return;
+        }
+        setReviewing(false);
         if (res.waiting || !res.payload) {
           setPayload(null);
           setWaiting(true);
@@ -213,6 +240,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
         if (!cancel) {
           setPayload(null);
           setWaiting(false);
+          setReviewing(false);
           setReadOnly(null);
           setPreviewError(err.message);
         }
@@ -329,7 +357,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
               </label>
             </>
           )}
-          {sentAction ? (
+          {sentAction || reviewing ? (
             <p className="meta">Evidence sent. PayPal is reviewing.</p>
           ) : readOnly ? (
             <p className="meta">{readOnly}</p>
@@ -473,6 +501,11 @@ function softWrap(value: string) {
   return value.split(/([._])/).map((part, index) =>
     part === "." || part === "_" ? <span key={index}>{part}<wbr /></span> : <span key={index}>{part}</span>,
   );
+}
+
+function counterText(ready: boolean | undefined, amount: string | undefined): string {
+  if (!ready) return "Loading";
+  return `$${amount ?? "0.00"}`;
 }
 
 function canBecomeActionable(reasonCode: string | undefined, replay: boolean): boolean {
