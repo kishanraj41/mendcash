@@ -83,7 +83,7 @@ export function App() {
           <div className="stake">
             <span>Submitted</span>
             <strong>${session?.submittedUsd ?? "—"}</strong>
-            <small>evidence sent, not resolved</small>
+            <small>this demo, evidence sent</small>
           </div>
           <div className="recovered">
             <span>Recovered</span>
@@ -93,6 +93,7 @@ export function App() {
           <div className="stake">
             <span>Open stake</span>
             <strong>${session?.atStakeUsd ?? "—"}</strong>
+            <small>this demo, still open</small>
           </div>
           <button className="primary" type="button" onClick={() => setSimulateOpen(true)}>
             Simulate a chargeback
@@ -159,6 +160,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
   const [payload, setPayload] = useState<Payload | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  const [sentAction, setSentAction] = useState<Action | null>(null);
   const [busy, setBusy] = useState(false);
   const stakeFigure = view.figures.find((figure) => figure.key === "stake");
 
@@ -166,6 +168,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
     setCarrier(view.plan.tracking?.carrier || "UPS");
     setTracking(view.plan.tracking?.number || "");
     setResult(null);
+    setSentAction(null);
   }, [view.dispute.dispute_id, view.plan.tracking?.carrier, view.plan.tracking?.number]);
 
   const body = useMemo(() => {
@@ -196,13 +199,14 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
     return () => {
       cancel = true;
     };
-  }, [view.dispute.dispute_id, body]);
+  }, [view.dispute.dispute_id, view.dispute.status, view.dispute.update_time, body]);
 
   async function approve() {
     setBusy(true);
     setResult(null);
     try {
       const approved = await api.approve(view.dispute.dispute_id, body);
+      setSentAction(action);
       setResult(approved.replay ? "Approved in replay. PayPal was not called." : "Approved and sent to the PayPal sandbox.");
       onChanged();
     } catch (err) {
@@ -258,7 +262,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
             </>
           )}
           <p className="meta" style={{ marginTop: 12 }}>
-            Evidence PayPal asked for: {view.plan.requested.join(", ") || "none yet"}.
+            Evidence PayPal asked for: {view.plan.requested.length ? view.plan.requested.join(", ") : view.dispute.status === "UNDER_REVIEW" ? "none — PayPal is reviewing what was sent" : "none yet"}.
             Ready to send: {view.plan.satisfiable.join(", ") || "notes only"}.
             Missing: {view.plan.missing.join(", ") || "nothing"}.
           </p>
@@ -304,7 +308,9 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
               </label>
             </>
           )}
-          {previewError && <p className="error">{previewError}</p>}
+          {waitingForPayPal(view.dispute.status, previewError, sentAction) ? (
+            <p className="meta">Waiting for PayPal to ask for evidence. In the sandbox this usually takes about 4 minutes after a simulated chargeback.</p>
+          ) : previewError ? <p className="error">{previewError}</p> : null}
           {payload && (
             <>
               <p className="path">{payload.method} {payload.path}</p>
@@ -313,7 +319,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
             </>
           )}
           {result && <p className="okmsg">{result}</p>}
-          <button className={action === "accept_claim" || action === "partial_refund" ? "danger" : "primary"} type="button" disabled={!payload || busy} onClick={() => approve().catch(() => undefined)}>
+          <button className={action === "accept_claim" || action === "partial_refund" ? "danger" : "primary"} type="button" disabled={!payload || busy || sentAction === action} onClick={() => approve().catch(() => undefined)}>
             {busy ? "Sending…" : "Approve and send"}
           </button>
         </aside>
@@ -438,6 +444,12 @@ function softWrap(value: string) {
   return value.split(/([._])/).map((part, index) =>
     part === "." || part === "_" ? <span key={index}>{part}<wbr /></span> : <span key={index}>{part}</span>,
   );
+}
+
+function waitingForPayPal(status: string, previewError: string | null, sentAction: Action | null): boolean {
+  if (sentAction || !previewError) return false;
+  if (!/not asking/i.test(previewError)) return false;
+  return status === "OPEN" || status === "UNDER_REVIEW";
 }
 
 function prettyReason(reason: string): string {

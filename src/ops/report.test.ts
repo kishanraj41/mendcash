@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { loadConfig } from "../config";
 import { credentialReport, formatCredentialReport } from "../ops/report";
-import { smokePlan } from "../../scripts/smoke";
+import { smokePlan, smokeShouldFail } from "../../scripts/smoke";
 
 describe("credentials report", () => {
   it("never includes secret values", () => {
@@ -20,6 +20,8 @@ describe("credentials report", () => {
     assert.equal(plan.paypal, true);
     assert.equal(plan.nebius, true);
     assert.equal(plan.webhookMissing, true);
+    assert.equal(smokeShouldFail(credentialReport(env), false), false);
+    assert.equal(smokeShouldFail(credentialReport({ PAYPAL_CLIENT_ID: "", PAYPAL_CLIENT_SECRET: "", PAYPAL_WEBHOOK_ID: "", NEBIUS_API_KEY: "" }), false), true);
   });
 
   it("refuses the model that followed a planted refund", () => {

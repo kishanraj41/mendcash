@@ -58,6 +58,7 @@ export type CaseView = {
     dispute_life_cycle_stage?: string;
     external_reason_code?: string;
     seller_response_due_date?: string;
+    update_time?: string;
   };
   buyerText: string;
   injection: { detected: boolean; patterns: string[] };

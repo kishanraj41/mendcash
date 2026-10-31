@@ -13,6 +13,12 @@ export function smokePlan(lines: CredentialLine[]): { paypal: boolean; nebius: b
   };
 }
 
+/** A missing webhook id is a warning. Auth failures and other missing secrets still fail. */
+export function smokeShouldFail(lines: CredentialLine[], authFailed: boolean): boolean {
+  const otherMissing = lines.some((line) => line.state === "missing" && line.name !== "PAYPAL_WEBHOOK_ID");
+  return authFailed || otherMissing;
+}
+
 async function paypalAuth(): Promise<void> {
   const config = loadConfig();
   const rest = new PayPalRest({ config, http: createFetchClient() });
@@ -56,13 +62,13 @@ async function main(): Promise<void> {
   const lines = credentialReport(process.env);
   console.log(formatCredentialReport(lines));
   const plan = smokePlan(lines);
-  let failed = lines.some((line) => line.state === "missing");
+  let authFailed = false;
   if (plan.paypal) {
     try {
       await paypalAuth();
     } catch (error) {
       console.error(error instanceof Error ? error.message : "paypal auth failed");
-      failed = true;
+      authFailed = true;
     }
   } else {
     console.log("paypal_auth: skipped (client id or secret missing)");
@@ -72,12 +78,15 @@ async function main(): Promise<void> {
       await nebiusAuth();
     } catch (error) {
       console.error(error instanceof Error ? error.message : "nebius auth failed");
-      failed = true;
+      authFailed = true;
     }
   } else {
     console.log("nebius_auth: skipped (NEBIUS_API_KEY missing)");
   }
-  if (failed) {
+  if (plan.webhookMissing) {
+    console.log("warning: PAYPAL_WEBHOOK_ID is not set. Status will refresh by polling. This is not a failure.");
+  }
+  if (smokeShouldFail(lines, authFailed)) {
     console.log("FAIL");
     process.exit(1);
   }

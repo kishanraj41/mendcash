@@ -79,7 +79,7 @@ The server reads `PORT` (default 3000). Open `http://localhost:3000`.
 | `SEED_LIVE=1 npm run seed` | Also creates sandbox card orders and chargebacks. Needs PayPal keys. Prints dispute ids, never secrets. Non-zero if a call fails. |
 | `npm run eval` | Scores the fixtures. Labeled fixture, not live. Non-zero if a check fails. |
 | `npm run eval -- --live` | Runs this app's reader and money engine on `fixtures/live-seed-result.json` against the sandbox and Nebius. Does not send writes. Needs keys and a prior `SEED_LIVE=1 npm run seed`. |
-| `npm run smoke` | Checks that the four credentials are set, then auths to PayPal and Nebius. Prints `set` or `missing` and `ok`. Never prints secrets. Non-zero if a variable is missing or auth fails. |
+| `npm run smoke` | Auths to PayPal and Nebius when those keys are set. A missing `PAYPAL_WEBHOOK_ID` is a warning and does not fail the command. Never prints secrets. Non-zero if client credentials are missing or auth fails. |
 | `npm start` | Serves the API and the built UI. |
 
 ### Environment

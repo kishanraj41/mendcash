@@ -7,6 +7,7 @@ import { CapError } from "./caps/limiter";
 import { Desk } from "./services/desk";
 import type { ActionName } from "./approval/payload";
 import { nodeTooOld } from "./runtime";
+import { StatusError } from "./errors";
 
 const ACTIONS = new Set<ActionName>([
   "provide_evidence",
@@ -26,7 +27,7 @@ export type AppOptions = {
 export function createApp(options: AppOptions = {}) {
   const config = options.config || loadConfig();
   const desk = options.desk || new Desk(config, options.now);
-  const sessions = new Map<string, string>();
+  const sessions = new Map<string, SessionRec>();
   const app = express();
   app.disable("x-powered-by");
   if (config.trustProxy) app.set("trust proxy", 1);
@@ -83,7 +84,8 @@ export function createApp(options: AppOptions = {}) {
 
   app.get("/api/disputes/:id", async (req, res, next) => {
     try {
-      const analyze = req.query.analyze !== "0";
+      const flag = req.query.analyze;
+      const analyze = flag === "0" || flag === "false" ? false : flag === "1" ? true : "auto";
       res.json(await desk.getCase(req.params.id, clientIp(req), analyze));
     } catch (error) {
       next(error);
@@ -163,7 +165,15 @@ export function createApp(options: AppOptions = {}) {
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const message = error instanceof Error ? error.message : "Request failed.";
-    const status = error instanceof CapError ? 429 : /not found/i.test(message) ? 404 : /signature|rejected|session token/i.test(message) ? 401 : 400;
+    const status = error instanceof StatusError
+      ? error.status
+      : error instanceof CapError
+        ? 429
+        : /not found/i.test(message)
+          ? 404
+          : /signature|rejected|session token/i.test(message)
+            ? 401
+            : 400;
     res.status(status).json({ error: message });
   });
 
@@ -180,24 +190,43 @@ function readCookie(req: Request, name: string): string {
   return part ? decodeURIComponent(part.slice(name.length + 1)) : "";
 }
 
-function ensureSession(req: Request, res: Response, sessions: Map<string, string>): string {
-  let sid = readCookie(req, "mendcash_sid");
-  let csrf = sid ? sessions.get(sid) : undefined;
-  if (!sid || !csrf) {
-    sid = randomBytes(16).toString("hex");
-    csrf = randomBytes(16).toString("hex");
-    sessions.set(sid, csrf);
-    res.setHeader("Set-Cookie", `mendcash_sid=${sid}; HttpOnly; SameSite=Lax; Path=/`);
+type SessionRec = { csrf: string; seen: number };
+
+function pruneSessions(sessions: Map<string, SessionRec>): void {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  for (const [sid, rec] of sessions) {
+    if (rec.seen < cutoff) sessions.delete(sid);
   }
-  return csrf;
+  while (sessions.size > 2000) {
+    const oldest = sessions.keys().next().value;
+    if (!oldest) break;
+    sessions.delete(oldest);
+  }
 }
 
-function requireCsrf(req: Request, sessions: Map<string, string>): void {
+function ensureSession(req: Request, res: Response, sessions: Map<string, SessionRec>): string {
+  pruneSessions(sessions);
+  let sid = readCookie(req, "mendcash_sid");
+  let rec = sid ? sessions.get(sid) : undefined;
+  if (!sid || !rec) {
+    sid = randomBytes(16).toString("hex");
+    rec = { csrf: randomBytes(16).toString("hex"), seen: Date.now() };
+    sessions.set(sid, rec);
+    const secure = req.secure ? "; Secure" : "";
+    res.setHeader("Set-Cookie", `mendcash_sid=${sid}; HttpOnly; SameSite=Lax; Path=/${secure}`);
+  } else {
+    rec.seen = Date.now();
+  }
+  return rec.csrf;
+}
+
+function requireCsrf(req: Request, sessions: Map<string, SessionRec>): void {
   const sid = readCookie(req, "mendcash_sid");
-  const csrf = sid ? sessions.get(sid) : undefined;
-  if (!csrf || req.header("x-mendcash-csrf") !== csrf) {
+  const rec = sid ? sessions.get(sid) : undefined;
+  if (!rec || req.header("x-mendcash-csrf") !== rec.csrf) {
     throw new Error("Missing session token. Reload the page.");
   }
+  rec.seen = Date.now();
 }
 
 function actionOf(value: unknown): ActionName {

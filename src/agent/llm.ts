@@ -22,7 +22,7 @@ export function createNebiusClient(config: AppConfig, fetchImpl: FetchLike = fet
       body: JSON.stringify({
         model,
         temperature: 0,
-        max_tokens: 600,
+        max_tokens: 1600,
         messages,
         response_format: { type: "json_object" },
       }),

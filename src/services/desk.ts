@@ -18,7 +18,9 @@ import { MISSING_MERCHANT_ID, orderWithMerchant } from "../paypal/merchant";
 import { callToolkit, disputeItems, unwrap } from "../paypal/toolkit";
 import { CATALOG, REASON_OPTIONS, reasonByCode, type CatalogItem } from "../scenario/catalog";
 import { buildScenario, type FixtureDispute, type FixtureOrder } from "../scenario/planted";
+import { isDemoReference } from "../demo-ref";
 import { previewInvoice, type Invoice, type InvoicePreview } from "./invoices";
+import { StatusError } from "../errors";
 
 export type TimelineEvent = {
   id: string;
@@ -58,7 +60,9 @@ export class Desk {
   private readonly disputes = new Map<string, FixtureDispute>();
   private readonly orders = new Map<string, FixtureOrder>();
   private readonly captureToOrder = new Map<string, string>();
-  private readonly reads = new Map<string, ReaderResult>();
+  private readonly reads = new Map<string, { version: string; result: ReaderResult }>();
+  private lastBulkRefresh = 0;
+  private readonly failedAt = new Map<string, number>();
   private readonly jobs = new Map<string, SimJob & { done: Promise<void> }>();
   private readonly timeline: TimelineEvent[] = [];
   private readonly fetchedAt = new Map<string, number>();
@@ -141,9 +145,14 @@ export class Desk {
   }
 
   private syncMoney(dispute: FixtureDispute): void {
+    const id = dispute.dispute_id;
+    if (!this.createdIds.has(id)) {
+      this.submitted.delete(id);
+      this.recovered.delete(id);
+      return;
+    }
     const facts = computeFigures(dispute, this.orderSync(dispute), this.now(), { replay: this.config.mode === "replay" });
     const cents = facts.stakeCents || 0;
-    const id = dispute.dispute_id;
     const outcome = (dispute as FixtureDispute & { dispute_outcome?: { outcome_code?: string } }).dispute_outcome?.outcome_code || "";
     if (dispute.status === "RESOLVED" && /SELLER/i.test(outcome)) {
       this.submitted.delete(id);
@@ -182,10 +191,19 @@ export class Desk {
   private draftMeta(draft: ReaderResult): { model: string; usageSource: string; latencyMs: number; costUsd: string | null; label: string } {
     let costUsd: string | null = null;
     if (draft.usageSource === "model") {
-      const agentPrice = this.config.prices[draft.model] || this.config.prices[this.config.nebius.agentModel];
-      const routerPrice = this.config.prices[this.config.nebius.routerModel];
-      let micro = agentPrice ? priceMicroUsd(draft.usage, agentPrice) : 0;
-      if (routerPrice && draft.routerUsage.prompt_tokens) micro += priceMicroUsd(draft.routerUsage, routerPrice);
+      const segments = draft.segments?.length
+        ? draft.segments
+        : [
+            { model: draft.model, usage: draft.usage },
+            { model: this.config.nebius.routerModel, usage: draft.routerUsage },
+          ];
+      let micro = 0;
+      for (const segment of segments) {
+        const price = this.config.prices[segment.model];
+        if (price && (segment.usage.prompt_tokens || segment.usage.completion_tokens)) {
+          micro += priceMicroUsd(segment.usage, price);
+        }
+      }
       costUsd = formatUsdAmount(micro);
     }
     return {
@@ -203,11 +221,11 @@ export class Desk {
   private assertDemoDispute(dispute: FixtureDispute, order: FixtureOrder | null): void {
     if (this.createdIds.has(dispute.dispute_id)) return;
     const reference = order?.purchase_units?.[0]?.reference_id || "";
-    if (/^(mendcash|mc-|sim-)/i.test(reference)) {
+    if (isDemoReference(reference)) {
       this.createdIds.add(dispute.dispute_id);
       return;
     }
-    throw new Error("This demo only sends PayPal writes for disputes MendCash created. Nothing was sent.");
+    throw new StatusError("This demo only sends PayPal writes for disputes MendCash created. Nothing was sent.", 403);
   }
 
   async listDisputes(): Promise<Array<Record<string, unknown>>> {
@@ -234,29 +252,35 @@ export class Desk {
   }
 
   async atStakeUsd(): Promise<string> {
-    const disputes = await this.allDisputes();
     let cents = 0;
-    for (const dispute of disputes) {
-      if (dispute.status === "RESOLVED") continue;
+    for (const dispute of this.disputes.values()) {
+      if (!this.createdIds.has(dispute.dispute_id) || dispute.status === "RESOLVED") continue;
       const facts = computeFigures(dispute, this.orderSync(dispute), this.now(), { replay: this.config.mode === "replay" });
       cents += facts.stakeCents || 0;
     }
     return centsToMoney(cents);
   }
 
-  async getCase(id: string, ip: string, analyze: boolean): Promise<Record<string, unknown>> {
+  async getCase(id: string, ip: string, analyze: boolean | "auto" = "auto"): Promise<Record<string, unknown>> {
     const dispute = await this.mustDispute(id);
     const order = await this.orderFor(dispute, this.config.mode === "live");
     const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
     const plan = planEvidence(dispute, order, refundIdOf(order, dispute));
-    let draft: ReaderResult | null = this.reads.get(dispute.dispute_id) ?? null;
+    const version = dispute.update_time || dispute.dispute_id;
+    const cached = this.reads.get(dispute.dispute_id);
+    const cacheHit = cached?.version === version ? cached.result : null;
+    let draft: ReaderResult | null = cacheHit ?? cached?.result ?? null;
     let capError: string | null = null;
-    if (analyze && !draft) {
+    const wantModel = !cacheHit && (analyze === true || (analyze === "auto" && this.createdIds.has(dispute.dispute_id)));
+    if (wantModel && !cacheHit) {
       try {
         draft = await this.analyze(dispute, ip);
       } catch (error) {
         capError = error instanceof Error ? error.message : "Analysis failed.";
+        if (!draft) draft = readWithRules(dispute);
       }
+    } else if (!draft) {
+      draft = readWithRules(dispute);
     }
     const narrative = draft ? stripModelMoney(draft.narrative) : "";
     const claimClass = draft
@@ -299,11 +323,11 @@ export class Desk {
     fields: { partialAmount?: string; carrier?: string; trackingNumber?: string },
     ip?: string,
   ): Promise<Record<string, unknown>> {
-    if (ip) this.limiter.takeApproval(ip);
     const dispute = await this.mustDispute(id);
     const order = await this.orderFor(dispute, this.config.mode === "live");
     this.assertDemoDispute(dispute, order);
     const prepared = this.build(dispute, action, fields);
+    if (ip) this.limiter.takeApproval(ip);
     const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
     const staged = this.gate.stage(id, prepared, this.now());
     const done = await this.gate.approve(staged.id, this.now(), facts);
@@ -513,7 +537,7 @@ export class Desk {
       reservation.commit(micro);
       const reconciled = classifyClaim(dispute.reason, result.buyerText, result.claimClass);
       const stored = { ...result, claimClass: reconciled, claimLabel: claimLabel(reconciled), narrative: stripModelMoney(result.narrative) };
-      this.reads.set(dispute.dispute_id, stored);
+      this.reads.set(dispute.dispute_id, { version: dispute.update_time || dispute.dispute_id, result: stored });
       return stored;
     } catch (error) {
       reservation.cancel();
@@ -529,7 +553,7 @@ export class Desk {
     const order = this.orderSync(dispute);
     const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
     const plan = planEvidence(dispute, order, refundIdOf(order, dispute));
-    const draft = this.reads.get(dispute.dispute_id);
+    const draft = this.reads.get(dispute.dispute_id)?.result;
     const narrative = stripModelMoney(draft?.narrative || readWithRules(dispute).narrative);
     const claimClass = classifyClaim(dispute.reason, buyerTextOf(dispute), draft?.claimClass || null);
     return prepareAction({
@@ -549,23 +573,57 @@ export class Desk {
 
   private async allDisputes(): Promise<FixtureDispute[]> {
     if (this.config.mode === "replay") return [...this.disputes.values()];
-    const listed = disputeItems(await callToolkit(this.config, "list_disputes", { page_size: 50 }));
+    const listed = await this.listDisputePages();
     const rows: FixtureDispute[] = [];
     const missing: string[] = [];
+    const stale: string[] = [];
     for (const row of listed) {
       const id = typeof row.dispute_id === "string" ? row.dispute_id : "";
       if (!id) continue;
-      if (this.fresh(id)) rows.push(this.disputes.get(id)!);
-      else {
+      const cached = this.disputes.get(id);
+      if (cached) {
+        rows.push(cached);
+        if (!this.listFresh(id)) stale.push(id);
+      } else {
         rows.push(summaryDispute(row));
-        missing.push(id);
+        const failed = this.failedAt.get(id) || 0;
+        if (this.now().getTime() - failed > 30_000) missing.push(id);
       }
     }
     for (const local of this.disputes.values()) {
       if (!rows.some((row) => row.dispute_id === local.dispute_id)) rows.push(local);
     }
     if (missing.length) void this.fillMissing(missing);
+    else if (stale.length && this.now().getTime() - this.lastBulkRefresh > 45_000) {
+      this.lastBulkRefresh = this.now().getTime();
+      void this.fillMissing(stale.slice(0, 8));
+    }
     return rows;
+  }
+
+  private listFresh(id: string): boolean {
+    const at = this.fetchedAt.get(id);
+    if (at === undefined || !this.disputes.has(id)) return false;
+    return this.now().getTime() - at < 60_000;
+  }
+
+  private async listDisputePages(): Promise<Array<Record<string, unknown>>> {
+    const seen = new Set<string>();
+    const all: Array<Record<string, unknown>> = [];
+    for (let page = 1; page <= 8; page += 1) {
+      const listed = disputeItems(await callToolkit(this.config, "list_disputes", { page_size: 50, page }));
+      if (!listed.length) break;
+      let added = 0;
+      for (const row of listed) {
+        const id = typeof row.dispute_id === "string" ? row.dispute_id : "";
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        all.push(row);
+        added += 1;
+      }
+      if (added === 0 || listed.length < 50) break;
+    }
+    return all;
   }
 
   private async fillMissing(ids: string[]): Promise<void> {
@@ -579,7 +637,9 @@ export class Desk {
           if (!id || this.fresh(id)) continue;
           try {
             await this.fetchDispute(id);
+            this.failedAt.delete(id);
           } catch (error) {
+            this.failedAt.set(id, this.now().getTime());
             console.error(error instanceof Error ? error.message : "Dispute refresh failed.");
           }
         }

@@ -47,7 +47,8 @@ async function liveSeed(): Promise<void> {
   }
   const rest = new PayPalRest({ config, http: createFetchClient() });
   const scenario = buildScenario();
-  const created: Array<{ disputeId: string; orderId: string; captureId: string; amount: string; reason: string }> = [];
+  const results: Array<{ disputeId: string; orderId: string; captureId: string; amount: string; reason: string }> = [];
+  const runTag = Date.now().toString(36);
   console.log("Live seed creates sandbox card orders and chargebacks. It does not print credentials.");
   for (const [index, row] of scenario.disputes.entries()) {
     const item = {
@@ -56,14 +57,14 @@ async function liveSeed(): Promise<void> {
       amount: row.order.purchase_units[0].amount.value,
       kind: row.order.purchase_units[0].shipping ? ("physical" as const) : ("digital" as const),
     };
-    const reference = `mendcash-seed-${String(index + 1).padStart(2, "0")}`;
+    const reference = `mendcash-seed-${runTag}-${String(index + 1).padStart(2, "0")}`;
     try {
-      const created = await rest.json("POST", "/v2/checkout/orders", cardOrderBody({
+      const orderResponse = await rest.json("POST", "/v2/checkout/orders", cardOrderBody({
         item,
         reference,
         card: config.paypal.testCard,
       }), { "PayPal-Request-Id": reference, Prefer: "return=representation" });
-      const resolved = await orderWithMerchant(rest, created, config.paypal.merchantId);
+      const resolved = await orderWithMerchant(rest, orderResponse, config.paypal.merchantId);
       const order = resolved.order as {
         id?: string;
         purchase_units?: Array<{ payments?: { captures?: Array<{ id?: string; network_transaction_reference?: { id?: string } }> } }>;
@@ -92,7 +93,7 @@ async function liveSeed(): Promise<void> {
         { "PayPal-Request-Id": `${reference}-cb` },
       )) as { dispute_id?: string };
       if (!chargeback.dispute_id) throw new Error("process-chargeback did not return dispute_id.");
-      created.push({
+      results.push({
         disputeId: chargeback.dispute_id,
         orderId: order.id,
         captureId: capture.id,
@@ -108,9 +109,9 @@ async function liveSeed(): Promise<void> {
   }
   fs.writeFileSync(
     path.join(fixtures, "live-seed-result.json"),
-    stableStringify({ createdAt: new Date().toISOString(), created, catalog: CATALOG.map((item) => item.id) }),
+    stableStringify({ createdAt: new Date().toISOString(), created: results, catalog: CATALOG.map((item) => item.id) }),
   );
-  console.log(`live_disputes: ${created.length}`);
+  console.log(`live_disputes: ${results.length}`);
   console.log("PayPal can take about 40 seconds to list a new dispute. Ids above came from process-chargeback.");
 }
 

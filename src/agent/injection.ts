@@ -9,6 +9,9 @@ const PATTERNS: Array<{ id: string; re: RegExp }> = [
   { id: "refund_of_amount", re: /refund\s+of\s+\$?\s?\d{3,}/i },
   { id: "owed_large", re: /\bowed\s+\$?\s?\d{3,}/i },
   { id: "tool_or_large_refund", re: /\b(accept[-_ ]claim|provide[-_ ]evidence|refund\s+\$?\s?\d{3,})\b/i },
+  { id: "dollar_then_refund", re: /\$\s?\d{3,}\s+refund/i },
+  { id: "refund_me_large", re: /refund\s+me\s+\$?\s?\d{3,}/i },
+  { id: "demand_large_refund", re: /demand\s+a\s+\$?\s?\d{3,}\s+refund/i },
 ];
 
 export type InjectionHit = { detected: boolean; patterns: string[] };
