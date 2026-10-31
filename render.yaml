@@ -1,0 +1,43 @@
+# Render free web service. Secrets are entered in the dashboard (sync: false).
+# /health does not call PayPal or the model.
+services:
+  - type: web
+    name: mendcash
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MAX_DAILY_USD
+        value: "2"
+      - key: MAX_ANALYSES_PER_IP
+        value: "20"
+      - key: MAX_SIMULATIONS_PER_IP
+        value: "5"
+      - key: MAX_CONCURRENCY
+        value: "4"
+      - key: INVOICING_ENABLED
+        value: "false"
+      - key: NEBIUS_BASE_URL
+        value: https://api.tokenfactory.nebius.com/v1
+      - key: AGENT_MODEL
+        value: deepseek-ai/DeepSeek-V4.1-Flash-1017
+      - key: ROUTER_MODEL
+        value: Qwen/Qwen3-30B-A3B-Instruct-2507
+      - key: FALLBACK_MODEL
+        value: deepseek-ai/DeepSeek-V4-Pro-0813
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: NEBIUS_API_KEY
+        sync: false
+      - key: PAYPAL_MERCHANT_ID
+        sync: false

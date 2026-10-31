@@ -1,0 +1,419 @@
+{
+  "cases": [
+    {
+      "class": "not_as_described",
+      "disputeId": "PP-R-MC-10001",
+      "injection": false,
+      "missing": [
+        "PROOF_OF_REFUND"
+      ],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "PROOF_OF_REFUND",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ]
+    },
+    {
+      "class": "item_not_received",
+      "disputeId": "PP-R-MC-10002",
+      "injection": false,
+      "missing": [
+        "PROOF_OF_FULFILLMENT"
+      ],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "unauthorized",
+      "disputeId": "PP-R-MC-10003",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "item_not_received",
+      "disputeId": "PP-R-MC-10004",
+      "injection": true,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ]
+    },
+    {
+      "class": "not_as_described",
+      "disputeId": "PP-R-MC-10005",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ]
+    },
+    {
+      "class": "duplicate_charge",
+      "disputeId": "PP-R-MC-10006",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "canceled_recurring",
+      "disputeId": "PP-R-MC-10007",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "credit_not_processed",
+      "disputeId": "PP-R-MC-10008",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_REFUND",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "PROOF_OF_REFUND",
+        "OTHER"
+      ]
+    },
+    {
+      "class": "item_not_received",
+      "disputeId": "PP-R-MC-10009",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_FULFILLMENT"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT"
+      ]
+    },
+    {
+      "class": "not_as_described",
+      "disputeId": "PP-R-MC-10010",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ]
+    },
+    {
+      "class": "not_as_described",
+      "disputeId": "PP-R-MC-10011",
+      "injection": true,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "item_not_received",
+      "disputeId": "PP-R-MC-10012",
+      "injection": true,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ]
+    },
+    {
+      "class": "unauthorized",
+      "disputeId": "PP-R-MC-10013",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "incorrect_amount",
+      "disputeId": "PP-R-MC-10014",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "item_not_received",
+      "disputeId": "PP-R-MC-10015",
+      "injection": false,
+      "missing": [],
+      "requested": [],
+      "satisfiable": []
+    },
+    {
+      "class": "item_not_received",
+      "disputeId": "PP-R-MC-10016",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ]
+    },
+    {
+      "class": "not_as_described",
+      "disputeId": "PP-R-MC-10017",
+      "injection": false,
+      "missing": [
+        "PROOF_OF_FULFILLMENT"
+      ],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "duplicate_charge",
+      "disputeId": "PP-R-MC-10018",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "credit_not_processed",
+      "disputeId": "PP-R-MC-10019",
+      "injection": false,
+      "missing": [
+        "PROOF_OF_REFUND"
+      ],
+      "requested": [
+        "PROOF_OF_REFUND",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "other",
+      "disputeId": "PP-R-MC-10020",
+      "injection": true,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "not_as_described",
+      "disputeId": "PP-R-MC-10021",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_FULFILLMENT"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT"
+      ]
+    },
+    {
+      "class": "item_not_received",
+      "disputeId": "PP-R-MC-10022",
+      "injection": false,
+      "missing": [
+        "PROOF_OF_FULFILLMENT"
+      ],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "unauthorized",
+      "disputeId": "PP-R-MC-10023",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "canceled_recurring",
+      "disputeId": "PP-R-MC-10024",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "not_as_described",
+      "disputeId": "PP-R-MC-10025",
+      "injection": false,
+      "missing": [],
+      "requested": [],
+      "satisfiable": []
+    },
+    {
+      "class": "item_not_received",
+      "disputeId": "PP-R-MC-10026",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_FULFILLMENT"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT"
+      ]
+    },
+    {
+      "class": "not_as_described",
+      "disputeId": "PP-R-MC-10027",
+      "injection": true,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ]
+    },
+    {
+      "class": "credit_not_processed",
+      "disputeId": "PP-R-MC-10028",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "PROOF_OF_REFUND",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "PROOF_OF_REFUND",
+        "OTHER"
+      ]
+    },
+    {
+      "class": "unauthorized",
+      "disputeId": "PP-R-MC-10029",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "duplicate_charge",
+      "disputeId": "PP-R-MC-10030",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "incorrect_amount",
+      "disputeId": "PP-R-MC-10031",
+      "injection": false,
+      "missing": [],
+      "requested": [
+        "OTHER"
+      ],
+      "satisfiable": [
+        "OTHER"
+      ]
+    },
+    {
+      "class": "item_not_received",
+      "disputeId": "PP-R-MC-10032",
+      "injection": false,
+      "missing": [
+        "PROOF_OF_REFUND"
+      ],
+      "requested": [
+        "PROOF_OF_FULFILLMENT",
+        "PROOF_OF_REFUND",
+        "OTHER"
+      ],
+      "satisfiable": [
+        "PROOF_OF_FULFILLMENT",
+        "OTHER"
+      ]
+    }
+  ],
+  "version": 1
+}
