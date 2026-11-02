@@ -5,7 +5,7 @@ import path from "path";
 import { loadConfig, type AppConfig } from "./config";
 import { CapError } from "./caps/limiter";
 import { Desk } from "./services/desk";
-import type { ActionName } from "./approval/payload";
+import { publicPrepared, type ActionName, type PreparedAction } from "./approval/payload";
 import { loadLocalEnv, nodeTooOld } from "./runtime";
 import { StatusError } from "./errors";
 
@@ -97,7 +97,8 @@ export function createApp(options: AppOptions = {}) {
       requireCsrf(req, sessions);
       const action = actionOf(req.body?.action);
       const preview = await desk.preview(req.params.id, action, fieldsOf(req.body));
-      res.json({ replay: config.mode === "replay", ...preview });
+      // File bytes stay on the server. The preview shows name, size and SHA-256 of what will be sent.
+      res.json({ replay: config.mode === "replay", ...preview, payload: preview.payload ? publicPrepared(preview.payload) : undefined });
     } catch (error) {
       next(error);
     }
@@ -111,7 +112,8 @@ export function createApp(options: AppOptions = {}) {
         res.json(await desk.approveInvoice(req.params.id, action));
         return;
       }
-      res.json(await desk.approve(req.params.id, action, fieldsOf(req.body), clientIp(req)));
+      const done = await desk.approve(req.params.id, action, fieldsOf(req.body), clientIp(req));
+      res.json({ ...done, payload: done.payload ? publicPrepared(done.payload as PreparedAction) : undefined });
     } catch (error) {
       next(error);
     }
@@ -143,6 +145,82 @@ export function createApp(options: AppOptions = {}) {
       return;
     }
     res.json(job);
+  });
+
+  // --- Agent purchases (AP2-shaped mandates) ---
+
+  app.post("/api/agent/purchase", async (req, res, next) => {
+    try {
+      requireCsrf(req, sessions);
+      const allowedIds = Array.isArray(req.body?.allowedIds) ? req.body.allowedIds.map(String).slice(0, 10) : [];
+      res.json(
+        await desk.agentPurchase(
+          { instruction: String(req.body?.instruction || ""), allowedIds, maxUsd: String(req.body?.maxUsd || "") },
+          clientIp(req),
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/agent/purchases", (_req, res) => {
+    res.json({ purchases: desk.agentPurchases() });
+  });
+
+  app.post("/api/agent/purchases/:transactionId/dispute", async (req, res, next) => {
+    try {
+      requireCsrf(req, sessions);
+      const started = desk.disputeAgentPurchase(
+        req.params.transactionId,
+        String(req.body?.complaint || ""),
+        clientIp(req),
+        req.header("x-mendcash-instant") === "1",
+      );
+      if (req.query.wait === "1" && config.mode === "replay") await started.done;
+      res.status(202).json(desk.job(started.job.id));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** Mandate retrieval by AP2 transaction_id (the PayPal custom_id without "ap2:"). */
+  app.get("/api/ap2/checkout-mandates/:transactionId", (req, res, next) => {
+    try {
+      res.json(desk.mandateBundle(req.params.transactionId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/disputes/:id/evidence.pdf", async (req, res, next) => {
+    try {
+      const pdf = await desk.evidencePdf(req.params.id);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="mendcash-agent-mandate-${req.params.id.replace(/[^A-Za-z0-9-]/g, "")}.pdf"`);
+      res.send(Buffer.from(pdf));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/disputes/:id/sandbox/require-evidence", async (req, res, next) => {
+    try {
+      requireCsrf(req, sessions);
+      res.json(await desk.sandboxControl(req.params.id, "require_evidence", null, clientIp(req)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/disputes/:id/sandbox/adjudicate", async (req, res, next) => {
+    try {
+      requireCsrf(req, sessions);
+      const outcome = String(req.body?.outcome || "").toUpperCase();
+      res.json(await desk.sandboxControl(req.params.id, "adjudicate", outcome, clientIp(req)));
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/api/timeline", (_req, res) => {

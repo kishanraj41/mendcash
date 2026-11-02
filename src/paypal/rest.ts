@@ -71,9 +71,9 @@ export class PayPalRest {
     return parsed;
   }
 
-  async multipart(path: string, jsonBody: unknown, requestId: string): Promise<unknown> {
+  async multipart(path: string, jsonBody: unknown, requestId: string, files: MultipartFile[] = []): Promise<unknown> {
     const token = await this.accessToken();
-    const { contentType, body } = encodeMultipart(JSON.stringify(jsonBody));
+    const { contentType, body } = encodeMultipart(JSON.stringify(jsonBody), files);
     const response = await this.http({
       method: "POST",
       url: `${this.baseUrl}${path}`,
@@ -102,13 +102,20 @@ function safeParse(body: string): unknown {
   }
 }
 
-export function encodeMultipart(json: string): { contentType: string; body: string } {
+export type MultipartFile = { field: string; name: string; contentType: string; data: Uint8Array };
+
+/** JSON part `input`, then one binary part per file (PayPal names the file field `evidence-file`). */
+export function encodeMultipart(json: string, files: MultipartFile[] = []): { contentType: string; body: Buffer } {
   const boundary = "----mendcashform7";
-  const body =
-    `--${boundary}\r\n` +
-    `Content-Disposition: form-data; name="input"\r\n` +
-    `Content-Type: application/json\r\n\r\n` +
-    `${json}\r\n` +
-    `--${boundary}--\r\n`;
-  return { contentType: `multipart/form-data; boundary=${boundary}`, body };
+  const parts: Buffer[] = [
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="input"\r\nContent-Type: application/json\r\n\r\n${json}\r\n`, "utf8"),
+  ];
+  for (const file of files) {
+    const name = file.name.replace(/["\r\n]/g, "");
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${name}"\r\nContent-Type: ${file.contentType}\r\n\r\n`, "utf8"));
+    parts.push(Buffer.from(file.data));
+    parts.push(Buffer.from("\r\n", "utf8"));
+  }
+  parts.push(Buffer.from(`--${boundary}--\r\n`, "utf8"));
+  return { contentType: `multipart/form-data; boundary=${boundary}`, body: Buffer.concat(parts) };
 }

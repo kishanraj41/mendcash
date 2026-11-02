@@ -1,0 +1,29 @@
+name: Bug report
+description: Something did not work as described.
+labels: [bug]
+body:
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: [replay, live sandbox]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: 1. Open PP-R-AG-0001  2. Click Send evidence  3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected and what happened
+    validations:
+      required: true
+  - type: textarea
+    id: debug
+    attributes:
+      label: PayPal debug_id or server log line
+      description: Remove client ids, secrets, and tokens first.

@@ -47,3 +47,20 @@ fixture_avg_cost_per_dispute_usd: 0.005213
 | Model latency | p50 1.13 s, p95 2.53 s |
 
 Re-run `npm run eval` after changes to classification, evidence, or the money engine. Re-run `npm run eval -- --live` when the keys are available. When PayPal's reason code already names the claim, code keeps that class.
+
+## Agent-purchase disputes
+
+Six more disputes are built from signed AP2-shaped mandates (`src/scenario/agentic.ts`). The offline eval opens each one and checks:
+
+| Check | Pass rule |
+|---|---|
+| `agent_verdict_match` | authorized, outside_mandate, integrity_failure, or no_mandate, as planted. Must be 6/6. |
+| `agent_decision_match` | The code-computed contest or accept recommendation. Must be 6/6. |
+| `agent_pdf_attached_when_authorized` | The evidence preview carries the verification PDF exactly when the verdict is authorized. Must be 6/6. |
+| `agent_claim_flag_match` | The buyer text is flagged as an agent-purchase claim. Must be 6/6. |
+
+These run on demo Ed25519 keys from a public seed, so they prove the checks work on intact and altered records, not who signed.
+
+## AI-only metric
+
+`npm run eval -- --text-only` hides PayPal's reason code and asks the model to classify the buyer's words alone, next to a keyword baseline on the same text. It also reports how often the model flags agent-purchase claims. It needs `NEBIUS_API_KEY`, calls no PayPal endpoint, and prints the real Nebius cost. No numbers are checked in for it yet.

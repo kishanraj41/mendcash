@@ -33,8 +33,20 @@ describe("paypal rest", () => {
     assert.match((body.dispute as { processor_info: { notes: string } }).processor_info.notes, /never arrived/);
     const form = encodeMultipart(JSON.stringify({ evidences: [{ evidence_type: "OTHER", notes: "hi" }] }));
     assert.match(form.contentType, /multipart\/form-data/);
-    assert.match(form.body, /name="input"/);
-    assert.match(form.body, /PROOF|OTHER/);
+    assert.match(form.body.toString("utf8"), /name="input"/);
+    assert.match(form.body.toString("utf8"), /PROOF|OTHER/);
+  });
+
+  it("adds the evidence file as its own binary part after the JSON input", () => {
+    const pdf = Buffer.from("%PDF-1.7\nâãbinary\n%%EOF", "latin1");
+    const form = encodeMultipart(JSON.stringify({ evidences: [{ evidence_type: "OTHER", documents: [{ name: "proof.pdf" }] }] }), [
+      { field: "evidence-file", name: "proof.pdf", contentType: "application/pdf", data: pdf },
+    ]);
+    const text = form.body.toString("latin1");
+    assert.ok(text.indexOf('name="input"') < text.indexOf('name="evidence-file"; filename="proof.pdf"'));
+    assert.match(text, /Content-Type: application\/pdf\r\n\r\n%PDF-1\.7/);
+    assert.ok(form.body.includes(pdf), "file bytes are copied unchanged");
+    assert.match(text, /------mendcashform7--\r\n$/);
   });
 
   it("verifies webhook signatures through PayPal and does not echo the token", async () => {
@@ -45,7 +57,7 @@ describe("paypal rest", () => {
       if (req.url.endsWith("/v1/oauth2/token")) {
         return { status: 200, headers: {}, body: JSON.stringify({ access_token: "token-value", expires_in: 300 }) };
       }
-      const parsed = JSON.parse(req.body || "{}") as { webhook_id?: string; webhook_event?: { id?: string } };
+      const parsed = JSON.parse(typeof req.body === "string" ? req.body : "{}") as { webhook_id?: string; webhook_event?: { id?: string } };
       assert.equal(parsed.webhook_id, "WH-TEST");
       assert.equal(parsed.webhook_event?.id, "WH-1");
       assert.equal(req.url.includes("?"), false);

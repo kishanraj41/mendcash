@@ -4,6 +4,10 @@ export type CardOrderInput = {
   item: CatalogItem;
   reference: string;
   card: { number: string; expiry: string; securityCode: string; name: string };
+  /** "ap2:<transaction_id>" for agent purchases. PayPal echoes custom_id on the order and the capture. */
+  customId?: string;
+  /** Overrides item.amount when an agent buys more than one unit. */
+  amount?: string;
 };
 
 export function cardOrderBody(input: CardOrderInput): Record<string, unknown> {
@@ -13,8 +17,9 @@ export function cardOrderBody(input: CardOrderInput): Record<string, unknown> {
       {
         reference_id: input.reference,
         description: input.item.title,
-        amount: { currency_code: "USD", value: input.item.amount },
+        amount: { currency_code: "USD", value: input.amount || input.item.amount },
         soft_descriptor: "MENDCASH",
+        ...(input.customId ? { custom_id: input.customId.slice(0, 127) } : {}),
       },
     ],
     payment_source: {

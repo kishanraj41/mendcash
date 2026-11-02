@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type CaseView, type Catalog, type DisputeRow, type InvoiceView, type Payload, type Session, type SimJob } from "./api";
+import { AgentPurchase, DecisionBanner, MandateProof, SandboxControls } from "./AgentPanel";
 
 type Action = "provide_evidence" | "add_tracking" | "accept_claim" | "partial_refund";
 
@@ -19,6 +20,7 @@ export function App() {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [simulateOpen, setSimulateOpen] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
   const [loadingCase, setLoadingCase] = useState(false);
 
   async function refreshLists(): Promise<boolean> {
@@ -105,11 +107,12 @@ export function App() {
 
   return (
     <div className="app">
+      <a className="skip" href="#case">Skip to the case</a>
       <header className="top">
         <div>
-          <p className="kicker">PayPal dispute desk</p>
+          <p className="kicker">The dispute layer for agentic commerce</p>
           <h1>MendCash</h1>
-          <p className="tag">AI reads the messy text. Code does the math. You approve.</p>
+          <p className="tag">"I didn't buy that, my AI did." MendCash answers with the buyer's own signed mandate. Code does the math. You approve.</p>
         </div>
         <div className="top-actions">
           <div className="stake">
@@ -127,7 +130,10 @@ export function App() {
             <strong className={session?.countersReady ? undefined : "pending"}>{counterText(session?.countersReady, session?.atStakeUsd)}</strong>
             <small>awaiting a response, this sandbox</small>
           </div>
-          <button className="primary" type="button" onClick={() => setSimulateOpen(true)}>
+          <button className="primary" type="button" onClick={() => setAgentOpen(true)}>
+            Let an agent buy
+          </button>
+          <button className="ghost" type="button" onClick={() => setSimulateOpen(true)}>
             Simulate a chargeback
           </button>
         </div>
@@ -157,7 +163,7 @@ export function App() {
           </div>
           <InvoicePanel invoices={invoices} onApproved={() => refreshLists().catch((err: Error) => setError(err.message))} />
         </aside>
-        <main className="case">
+        <main className="case" id="case" tabIndex={-1}>
           {!selected && (
             <div className="welcome">
               <h2>A chargeback is a deadline with a story attached.</h2>
@@ -168,6 +174,18 @@ export function App() {
           {caseView && <CasePane view={caseView} onChanged={() => { refreshLists().catch((err: Error) => setError(err.message)); api.case(caseView.dispute.dispute_id).then((view) => showCase(view)).catch((err: Error) => setError(err.message)); }} />}
         </main>
       </div>
+      {agentOpen && catalog && (
+        <AgentPurchase
+          catalog={catalog}
+          replay={Boolean(session?.replay)}
+          onClose={() => setAgentOpen(false)}
+          onFound={(id) => {
+            setAgentOpen(false);
+            setSelected(id);
+            refreshLists().catch((err: Error) => setError(err.message));
+          }}
+        />
+      )}
       {simulateOpen && catalog && (
         <Simulate
           catalog={catalog}
@@ -312,7 +330,11 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
         {view.countdown.simulated && <span className="chip warn">Simulated deadline</span>}
         {view.injection.detected && <span className="chip bad">Buyer instructions ignored</span>}
         {view.replay && <span className="chip warn">Replay</span>}
+        {view.agentClaim && <span className="chip warn">Buyer says an AI agent bought it</span>}
       </div>
+      <DecisionBanner rec={view.recommendation} />
+      <MandateProof proof={view.agentProof} disputeId={view.dispute.dispute_id} />
+      <SandboxControls disputeId={view.dispute.dispute_id} sandbox={view.sandbox} onChanged={onChanged} />
       <div className="figures">
         {view.figures.filter((figure) => figure.key !== "deadline").map((figure) => (
           <div className="figure" key={figure.key}>
@@ -406,6 +428,11 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
               <p className="path">{payload.method} {payload.path}</p>
               <p className="path">{payload.contentType} · PayPal-Request-Id {payload.requestId}</p>
               <pre className="code">{JSON.stringify(payload.body, null, 2)}</pre>
+              {payload.files?.map((file) => (
+                <p className="path mono" key={file.sha256}>
+                  + file part "{file.field}": {file.name} · {file.contentType} · {file.size} bytes · sha256 {file.sha256.slice(0, 16)}…
+                </p>
+              ))}
             </>
           )}
           {result && <p className="okmsg">{result}</p>}

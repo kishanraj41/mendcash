@@ -50,6 +50,7 @@ export type FixtureOrder = {
   purchase_units: Array<{
     reference_id: string;
     description: string;
+    custom_id?: string;
     amount: Money;
     payee: { email_address: string; merchant_id: string };
     shipping?: { trackers: Array<{ id: string; status: string; carrier: string; tracking_number: string }> };

@@ -8,7 +8,7 @@ export type HttpRequest = {
   method: string;
   url: string;
   headers: Record<string, string>;
-  body?: string;
+  body?: string | Uint8Array;
 };
 
 export type HttpClient = (req: HttpRequest) => Promise<HttpResponse>;

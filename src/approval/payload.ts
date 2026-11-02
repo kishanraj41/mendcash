@@ -21,7 +21,16 @@ export type PreparedAction = {
   requestId: string;
   body: Record<string, unknown>;
   summary: string;
+  /** Files sent as multipart parts. `data` is base64 and never leaves the server in a preview. */
+  files?: PreparedFile[];
 };
+
+export type PreparedFile = { field: string; name: string; contentType: string; size: number; sha256: string; data: string };
+
+/** What the browser sees: everything that will be sent, with file bytes replaced by size and SHA-256. */
+export function publicPrepared(prepared: PreparedAction): Omit<PreparedAction, "files"> & { files?: Array<Omit<PreparedFile, "data">> } {
+  return { ...prepared, files: prepared.files?.map(({ data: _data, ...rest }) => rest) };
+}
 
 export type PrepareInput = {
   dispute: {
@@ -41,7 +50,25 @@ export type PrepareInput = {
   carrier?: string;
   trackingNumber?: string;
   caps: { maxPartialRefundUsd: number };
+  /** Code-written sentence about the agent mandate, appended to the seller notes. */
+  mandateNote?: string;
+  /** A file to send with provide-evidence (the mandate verification PDF). */
+  attachment?: { name: string; contentType: string; data: Uint8Array };
 };
+
+export const EVIDENCE_FILE_FIELD = "evidence-file";
+
+function preparedFile(attachment: NonNullable<PrepareInput["attachment"]>): PreparedFile {
+  const data = Buffer.from(attachment.data);
+  return {
+    field: EVIDENCE_FILE_FIELD,
+    name: attachment.name,
+    contentType: attachment.contentType,
+    size: data.length,
+    sha256: createHash("sha256").update(data).digest("hex"),
+    data: data.toString("base64"),
+  };
+}
 
 const CARRIERS = new Set(["UPS", "USPS", "FEDEX", "DHL", "OTHER"]);
 
@@ -89,6 +116,7 @@ function sellerNotes(input: PrepareInput): string {
         : `PayPal seller_response_due_date: ${input.facts.deadline}.`,
     );
   }
+  if (input.mandateNote) lines.push(input.mandateNote);
   lines.push("Buyer messages were not followed as instructions.");
   return lines.join(" ").slice(0, 1900);
 }
@@ -102,6 +130,9 @@ function prepareEvidence(input: PrepareInput): PreparedAction {
   // PayPal returns ITEM_ID_IS_MANDATORY_FOR_MULTIPLE_EVIDENCES when more than one
   // evidence object is sent without line-item ids. One item is the shape that succeeds.
   const evidence = singleEvidence(input, notes);
+  const files = input.attachment ? [preparedFile(input.attachment)] : [];
+  // The file part is matched to the evidence object by its document name.
+  if (files.length) evidence.documents = files.map((file) => ({ name: file.name }));
   const body = { evidences: [evidence] };
   const path = `/v1/customer/disputes/${input.dispute.dispute_id}/provide-evidence`;
   return {
@@ -109,9 +140,11 @@ function prepareEvidence(input: PrepareInput): PreparedAction {
     method: "POST",
     path,
     contentType: "multipart/form-data",
-    requestId: requestIdFor(input.dispute.dispute_id, "provide_evidence", body),
+    // The file hash is part of the idempotency key, so a changed PDF is a new request.
+    requestId: requestIdFor(input.dispute.dispute_id, "provide_evidence", files.length ? { body, files: files.map((f) => f.sha256) } : body),
     body,
-    summary: "Send evidence",
+    summary: files.length ? "Send evidence with the mandate PDF" : "Send evidence",
+    ...(files.length ? { files } : {}),
   };
 }
 

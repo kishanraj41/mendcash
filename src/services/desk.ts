@@ -1,7 +1,32 @@
 import { createHash, randomUUID } from "crypto";
 import os from "os";
 import path from "path";
-import { classifyClaim, claimLabel } from "../agent/classify";
+import { classifyClaim, claimLabel, mentionsAgentPurchase } from "../agent/classify";
+import {
+  closeMandates,
+  customIdFor,
+  evaluateConstraints,
+  grantMandates,
+  issueReceipts,
+  publicBundle,
+  signCheckout,
+  transactionIdFromCustomId,
+  verifyBundle,
+  type AgentProof,
+  type CheckoutPayload,
+  type ConstraintCheck,
+  type MandateBundle,
+  type OpenCheckoutMandate,
+  type OpenPaymentMandate,
+  type PayPalRecord,
+} from "../mandate/ap2";
+import { pickWithModel, pickWithRules, type AgentPick } from "../mandate/agent";
+import { decodeJws } from "../mandate/jws";
+import { demoKeys, type DemoKeys } from "../mandate/keys";
+import { EVIDENCE_PDF_NAME, mandateEvidencePdf } from "../mandate/pdf";
+import { MandateStore } from "../mandate/store";
+import { recommend } from "../money/decision";
+import { buildAgenticScenario, DEMO_MERCHANT } from "../scenario/agentic";
 import { buyerTextOf, planEvidence, refundIdOf } from "../agent/evidence";
 import { stripModelMoney } from "../agent/injection";
 import { createNebiusClient } from "../agent/llm";
@@ -82,6 +107,12 @@ export class Desk {
   private readonly reader: (input: ReaderInput) => Promise<ReaderResult>;
   private readonly port: WritePort;
   readonly writes: WriteCall[] = [];
+  /** Demo AP2 keys. The default seed is public, so signatures show integrity, not identity. */
+  private readonly keys: DemoKeys;
+  readonly mandates: MandateStore;
+  /** Sandbox-only PayPal-side controls. Kept apart from merchant writes on purpose. */
+  readonly sandboxCalls: Array<{ disputeId: string; kind: SandboxKind; outcome: string | null; at: string; replay: boolean }> = [];
+  private agentSeq = 0;
 
   constructor(
     private readonly config: AppConfig,
@@ -89,6 +120,14 @@ export class Desk {
     reader?: (input: ReaderInput) => Promise<ReaderResult>,
     private readonly rest: PayPalRest = new PayPalRest({ config, now }),
   ) {
+    this.keys = demoKeys(config.mandate.keySeed);
+    const explicitState = config.stateFile.trim();
+    const mandateFile = explicitState
+      ? path.join(path.dirname(explicitState), "mendcash-mandates.json")
+      : config.mode === "live"
+        ? path.join(os.tmpdir(), "mendcash-mandates.json")
+        : null;
+    this.mandates = new MandateStore(mandateFile);
     this.reader =
       reader ||
       (config.mode === "live" && config.nebius.configured
@@ -129,6 +168,18 @@ export class Desk {
       const capture = order.purchase_units[0]?.payments.captures[0]?.id;
       if (capture) this.captureToOrder.set(capture, order.id);
       this.createdIds.add(dispute.dispute_id);
+      this.syncMoney(dispute);
+    }
+    // Agent-purchase disputes: signed mandate bundles bound to the order through custom_id.
+    for (const row of buildAgenticScenario(this.keys)) {
+      const dispute = clone(row.dispute);
+      const order = clone(row.order);
+      this.disputes.set(dispute.dispute_id, dispute);
+      this.orders.set(order.id, order);
+      const capture = order.purchase_units[0]?.payments.captures[0]?.id;
+      if (capture) this.captureToOrder.set(capture, order.id);
+      this.createdIds.add(dispute.dispute_id);
+      if (row.bundle) this.mandates.put(row.bundle);
       this.syncMoney(dispute);
     }
     this.invoices = clone(scenario.invoices);
@@ -307,7 +358,26 @@ export class Desk {
     const claimClass = draft
       ? classifyClaim(dispute.reason, draft.buyerText, draft.claimClass)
       : classifyClaim(dispute.reason, buyerTextOf(dispute), null);
+    const agentClaim = !pending && (Boolean(draft?.agentClaim) || mentionsAgentPurchase(buyerTextOf(dispute)));
+    const agentProof = this.proofFor(order, agentClaim);
+    const recommendation = recommend({
+      status: dispute.status,
+      outcome: outcomeOf(dispute),
+      claimClass,
+      stakeCents: facts.stakeCents,
+      currency: facts.currency,
+      plan,
+      proof: agentProof,
+      sellerSent: sellerSentEvidence(dispute),
+      // Replay deadlines are simulated, so a fixture date in the past is not a reason to fold.
+      overdue: facts.countdown.overdue && !facts.countdown.simulated,
+      smallClaimCents: Math.round(this.config.mandate.smallClaimUsd * 100),
+    });
     return {
+      agentClaim,
+      agentProof,
+      recommendation,
+      sandbox: this.sandboxOptions(dispute, member),
       mode: this.config.mode,
       replay: this.config.mode === "replay",
       modeLabel: this.modeLabel(),
@@ -352,7 +422,7 @@ export class Desk {
       return { reviewing: true, message: "Evidence sent. PayPal is reviewing." };
     }
     try {
-      return { payload: this.build(dispute, action, fields) };
+      return { payload: await this.build(dispute, action, fields) };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Preview failed.";
       if (/not asking/i.test(message)) {
@@ -372,7 +442,7 @@ export class Desk {
     const dispute = await this.mustDispute(id);
     const order = await this.orderFor(dispute, this.config.mode === "live");
     this.assertDemoDispute(dispute, order);
-    const prepared = this.build(dispute, action, fields);
+    const prepared = await this.build(dispute, action, fields);
     if (ip) this.limiter.takeApproval(ip);
     const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
     const staged = this.gate.stage(id, prepared, this.now());
@@ -420,10 +490,12 @@ export class Desk {
     return { approvalId: done.id, payload: done.prepared, result: done.result, replay: this.config.mode === "replay" };
   }
 
-  simulate(input: { itemId: string; reasonCode: string; complaint: string }, ip: string, instant: boolean): {
+  simulate(input: { itemId: string; reasonCode: string; complaint: string; orderId?: string }, ip: string, instant: boolean): {
     job: SimJob;
     done: Promise<void>;
   } {
+    const existing = input.orderId ? this.orders.get(input.orderId) || null : null;
+    if (input.orderId && !existing) throw new Error("Order not found. Nothing was filed.");
     const item = CATALOG.find((row) => row.id === input.itemId);
     const reason = reasonByCode(input.reasonCode);
     if (!item) throw new Error("Pick an item from the catalog.");
@@ -458,8 +530,8 @@ export class Desk {
     const run = (async () => {
       try {
         const disputeId = replay
-          ? await this.replaySimulate(job, item, reason.reason, reason.code, complaint, instant)
-          : await this.liveSimulate(job, item, reason.code, complaint);
+          ? await this.replaySimulate(job, item, reason.reason, reason.code, complaint, instant, existing)
+          : await this.liveSimulate(job, item, reason.code, complaint, existing);
         releaseQuota = false;
         job.disputeId = disputeId;
         job.status = "done";
@@ -493,6 +565,378 @@ export class Desk {
       replay: stored.replay,
       note: stored.note,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Agent purchases: AP2-shaped mandates bound to the PayPal order by custom_id.
+  // ---------------------------------------------------------------------------
+
+  /** Proof for an order. Null when the order has no ap2 custom_id and the buyer does not mention an agent. */
+  private proofFor(order: FixtureOrder | null, agentClaim: boolean): AgentProof | null {
+    const record = paypalRecordOf(order);
+    if (!record.customId && !agentClaim) return null;
+    return verifyBundle(this.mandates.get(transactionIdFromCustomId(record.customId)), this.keys, record);
+  }
+
+  private async mandateEvidence(
+    dispute: FixtureDispute,
+    order: FixtureOrder | null,
+  ): Promise<{ note: string; attachment: { name: string; contentType: string; data: Uint8Array } } | null> {
+    const proof = this.proofFor(order, false);
+    // Only an authorized purchase is evidence for the seller. Anything else would argue against our own record.
+    if (!proof || proof.verdict !== "authorized") return null;
+    const data = await this.renderEvidencePdf(dispute, order, proof);
+    return {
+      note:
+        `Agent purchase: the buyer's signed mandate authorized this order. PayPal custom_id ${proof.customId} on order ` +
+        `${paypalRecordOf(order).orderId} matches the signed AP2 transaction_id, and all ${proof.checks.length} checks pass. Verification attached as ${EVIDENCE_PDF_NAME}.`,
+      attachment: { name: EVIDENCE_PDF_NAME, contentType: "application/pdf", data },
+    };
+  }
+
+  private renderEvidencePdf(dispute: FixtureDispute, order: FixtureOrder | null, proof: AgentProof): Promise<Uint8Array> {
+    const record = paypalRecordOf(order);
+    const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
+    return mandateEvidencePdf({
+      disputeId: dispute.dispute_id,
+      reason: dispute.reason,
+      stake: facts.stake || "unknown",
+      currency: facts.currency,
+      proof,
+      paypal: { orderId: record.orderId, captureId: record.captureId, customId: record.customId, orderCreateTime: record.orderCreateTime },
+      bundle: this.mandates.get(proof.transactionId),
+      // Pinned to the dispute record: the same dispute gives the same bytes, so the same PayPal-Request-Id.
+      generatedAt: dispute.create_time || new Date(0).toISOString(),
+    });
+  }
+
+  /** The verification PDF for any dispute with a mandate on its order (GET /api/disputes/:id/evidence.pdf). */
+  async evidencePdf(id: string): Promise<Uint8Array> {
+    const dispute = await this.mustDispute(id);
+    const order = await this.orderFor(dispute, false);
+    const proof = this.proofFor(order, true);
+    if (!proof || proof.verdict === "no_mandate") throw new StatusError("No agent mandate is linked to this dispute.", 404);
+    return this.renderEvidencePdf(dispute, order, proof);
+  }
+
+  /** Retrieval by AP2 transaction_id, the step AP2 v0.2 leaves out of scope. */
+  mandateBundle(transactionId: string): Record<string, unknown> {
+    const bundle = this.mandates.get(transactionId);
+    if (!bundle) throw new StatusError("Mandate not found.", 404);
+    return publicBundle(bundle);
+  }
+
+  agentPurchases(): Array<Record<string, unknown>> {
+    return this.mandates.list().map((bundle) => ({
+      transactionId: bundle.transactionId,
+      instruction: bundle.instruction,
+      createdAt: bundle.createdAt,
+      origin: bundle.origin,
+      paypal: bundle.paypal,
+      disputeIds: [...this.disputes.values()]
+        .filter((dispute) => bundle.paypal && this.orderSync(dispute)?.id === bundle.paypal.orderId)
+        .map((dispute) => dispute.dispute_id),
+    }));
+  }
+
+  /**
+   * The buyer grants a mandate, the shopping agent picks, code checks the pick against the signed
+   * mandate, and only then is a PayPal order created with custom_id = "ap2:" + transaction_id.
+   */
+  async agentPurchase(input: { instruction: string; allowedIds: string[]; maxUsd: string }, ip: string): Promise<AgentPurchaseResult> {
+    const instruction = input.instruction.trim();
+    if (instruction.length < 3 || instruction.length > 500) throw new Error("Type a shopping instruction between 3 and 500 characters.");
+    const allowed = CATALOG.filter((item) => input.allowedIds.includes(item.id));
+    if (!allowed.length) throw new Error("Allow at least one catalog item.");
+    const maxCents = Math.round(Number(input.maxUsd) * 100);
+    if (!Number.isFinite(maxCents) || maxCents < 100 || maxCents > 50_000) throw new Error("Set a spending limit between 1 and 500 USD.");
+    this.limiter.takeSimulation(ip);
+    let keepQuota = false;
+    try {
+      const result = await this.runAgentPurchase(instruction, allowed, maxCents, ip);
+      keepQuota = result.status === "bought";
+      return result;
+    } finally {
+      if (!keepQuota) this.limiter.releaseSimulation(ip);
+    }
+  }
+
+  private async runAgentPurchase(instruction: string, allowed: CatalogItem[], maxCents: number, ip: string): Promise<AgentPurchaseResult> {
+    const replay = this.config.mode === "replay";
+    const now = this.now();
+    const at = now.toISOString();
+    const iat = Math.floor(now.getTime() / 1000);
+    const steps: AgentStep[] = [];
+    const log = (step: string, detail: string, state: AgentStep["state"] = "done") => steps.push({ at, step, detail, state });
+
+    const grant = grantMandates(this.keys, {
+      subject: "demo-buyer",
+      instruction,
+      merchant: DEMO_MERCHANT,
+      items: allowed.map(({ id, title }) => ({ id, title })),
+      quantity: 1,
+      maxCents,
+      currency: "USD",
+      iat,
+      exp: iat + 7 * 86_400,
+    });
+    log("mandate", `Buyer signed open mandates: ${allowed.map((item) => item.title).join(", ")}, quantity 1, up to ${centsToMoney(maxCents)} USD, valid 7 days.`);
+
+    const pick = await this.agentPick(instruction, allowed.map((item) => item.id), centsToMoney(maxCents), ip);
+    const item = CATALOG.find((row) => row.id === pick.itemId) || allowed[0];
+    log("pick", `Agent picked ${pick.quantity} x ${item.title} (${pick.source === "model" ? pick.model : "replay rules"}). ${pick.reason}`);
+
+    this.agentSeq += 1;
+    const n = String(this.agentSeq).padStart(4, "0");
+    const unitCents = Math.round(Number(item.amount) * 100);
+    const checkoutJwt = signCheckout(this.keys, {
+      id: `chk-${iat}-${n}`,
+      merchant: DEMO_MERCHANT,
+      item: { id: item.id, title: item.title },
+      unitCents,
+      quantity: pick.quantity,
+      currency: "USD",
+      iat,
+    });
+    log("checkout", `Merchant signed the cart: ${pick.quantity} x ${item.title}, ${centsToMoney(unitCents * pick.quantity)} USD.`);
+
+    const checks = evaluateConstraints(
+      decodeJws<OpenCheckoutMandate>(grant.openCheckout).payload,
+      decodeJws<OpenPaymentMandate>(grant.openPayment).payload,
+      decodeJws<CheckoutPayload>(checkoutJwt).payload,
+      iat,
+    );
+    const failed = checks.filter((check) => !check.pass);
+    const base = { replay, pick: { ...pick, title: item.title }, checks };
+    if (failed.length) {
+      log("guard", `Blocked before payment: ${failed.map((check) => check.label).join("; ")}. No order was created.`, "blocked");
+      return { ...base, status: "blocked", steps, transactionId: null, customId: null, orderId: null, captureId: null };
+    }
+    log("guard", `All ${checks.length} mandate checks pass, so the agent may pay.`);
+
+    const closed = closeMandates(this.keys, { checkoutJwt, payee: DEMO_MERCHANT, instrument: "Sandbox test card", iat, exp: iat + 3_600 });
+    const customId = customIdFor(closed.transactionId);
+    log("sign", `Agent signed the closed checkout and payment mandates. transaction_id ${closed.transactionId}.`);
+
+    const placed = replay
+      ? this.replayAgentOrder(n, item, pick.quantity, customId)
+      : await this.liveAgentOrder(item, pick.quantity, customId);
+    log("order", `${replay ? "Replay order" : "PayPal sandbox order"} ${placed.orderId}, capture ${placed.captureId}, custom_id ${customId}.`);
+
+    const receipts = issueReceipts(this.keys, {
+      closedCheckout: closed.closedCheckout,
+      closedPayment: closed.closedPayment,
+      orderId: placed.orderId,
+      captureId: placed.captureId,
+      iat,
+    });
+    log("receipt", "Merchant receipts bind the closed mandates to the PayPal order and capture.");
+
+    const bundle: MandateBundle = {
+      version: 1,
+      transactionId: closed.transactionId,
+      openCheckout: grant.openCheckout,
+      openPayment: grant.openPayment,
+      checkoutJwt,
+      closedCheckout: closed.closedCheckout,
+      closedPayment: closed.closedPayment,
+      checkoutReceipt: receipts.checkoutReceipt,
+      paymentReceipt: receipts.paymentReceipt,
+      paypal: { orderId: placed.orderId, captureId: placed.captureId, customId, createdAt: placed.createdAt },
+      instruction,
+      steps: steps.map(({ at: stepAt, step, detail }) => ({ at: stepAt, step, detail })),
+      createdAt: at,
+      origin: replay ? "replay" : "live",
+    };
+    this.mandates.put(bundle);
+    return {
+      ...base,
+      status: "bought",
+      steps,
+      transactionId: closed.transactionId,
+      customId,
+      orderId: placed.orderId,
+      captureId: placed.captureId,
+    };
+  }
+
+  private async agentPick(instruction: string, allowedIds: string[], maxUsd: string, ip: string): Promise<AgentPick> {
+    if (this.config.mode === "live" && this.config.nebius.configured) {
+      const reservation = this.limiter.reserveAnalysis(ip, Math.round(this.config.caps.reserveUsd * 1_000_000));
+      try {
+        const pick = await this.limiter.withSlot(() =>
+          pickWithModel({ instruction, catalog: CATALOG, allowedIds, maxUsd, model: this.config.nebius.agentModel }, createNebiusClient(this.config)),
+        );
+        const price = this.config.prices[pick.model];
+        reservation.commit(price && pick.usage.prompt_tokens ? priceMicroUsd(pick.usage, price) : 0);
+        return pick;
+      } catch (error) {
+        reservation.cancel();
+        console.error(error instanceof Error ? error.message : "Shopping agent call failed; using rules.");
+      }
+    }
+    return pickWithRules(instruction, CATALOG, allowedIds);
+  }
+
+  private replayAgentOrder(n: string, item: CatalogItem, quantity: number, customId: string): { orderId: string; captureId: string; createdAt: string } {
+    const orderId = `MCAGT${n}ORD`;
+    const captureId = `MCAGT${n}CAP`;
+    const value = centsToMoney(Math.round(Number(item.amount) * 100) * quantity);
+    const money = { currency_code: "USD", value };
+    const at = this.now().toISOString();
+    const tracking = `1ZMCAGT${n}`;
+    const order: FixtureOrder = {
+      id: orderId,
+      intent: "CAPTURE",
+      status: "COMPLETED",
+      purchase_units: [
+        {
+          reference_id: `sim-${8000 + this.agentSeq}`,
+          description: item.title,
+          custom_id: customId,
+          amount: money,
+          payee: { email_address: "merchant@example.com", merchant_id: DEMO_MERCHANT.id },
+          ...(item.kind === "physical"
+            ? { shipping: { trackers: [{ id: `${captureId}-${tracking}`, status: "SHIPPED", carrier: "UPS", tracking_number: tracking }] } }
+            : {}),
+          payments: {
+            captures: [
+              {
+                id: captureId,
+                status: "COMPLETED",
+                amount: money,
+                final_capture: true,
+                seller_receivable_breakdown: { gross_amount: money, paypal_fee: { currency_code: "USD", value: "0.00" }, net_amount: money },
+              },
+            ],
+          },
+        },
+      ],
+      create_time: at,
+      update_time: at,
+    };
+    this.orders.set(orderId, order);
+    this.captureToOrder.set(captureId, orderId);
+    return { orderId, captureId, createdAt: at };
+  }
+
+  private async liveAgentOrder(item: CatalogItem, quantity: number, customId: string): Promise<{ orderId: string; captureId: string; createdAt: string }> {
+    const reference = `mendcash-${Date.now()}`;
+    const amount = centsToMoney(Math.round(Number(item.amount) * 100) * quantity);
+    const created = await this.rest.json(
+      "POST",
+      "/v2/checkout/orders",
+      cardOrderBody({ item, reference, card: this.config.paypal.testCard, customId, amount }),
+      { "PayPal-Request-Id": reference, Prefer: "return=representation" },
+    );
+    const resolved = await orderWithMerchant(this.rest, created, this.config.paypal.merchantId);
+    const order = resolved.order as unknown as FixtureOrder;
+    const orderId = stringOf(order.id);
+    const captureId = stringOf(order.purchase_units?.[0]?.payments?.captures?.[0]?.id);
+    if (!orderId || !captureId) throw new Error("PayPal created no capture on the agent order. Nothing was signed as paid.");
+    this.orders.set(orderId, order);
+    this.captureToOrder.set(captureId, orderId);
+    return { orderId, captureId, createdAt: stringOf(order.create_time) || this.now().toISOString() };
+  }
+
+  /** The buyer disputes the agent's purchase: a 4853 chargeback against that same capture. */
+  disputeAgentPurchase(transactionId: string, complaint: string, ip: string, instant: boolean): { job: SimJob; done: Promise<void> } {
+    const bundle = this.mandates.get(transactionId);
+    if (!bundle?.paypal) throw new StatusError("Agent purchase not found.", 404);
+    const order = this.orders.get(bundle.paypal.orderId);
+    if (!order) throw new StatusError("This server does not hold the order for that agent purchase. Nothing was filed.", 404);
+    const itemId = decodeJws<CheckoutPayload>(bundle.checkoutJwt).payload.line_items[0]?.id || "";
+    const text = complaint.trim() || "I never agreed to this purchase. My AI shopping assistant bought it on its own.";
+    return this.simulate({ itemId, reasonCode: "4853", complaint: text, orderId: order.id }, ip, instant);
+  }
+
+  private sandboxOptions(dispute: FixtureDispute, member: boolean): { available: boolean; reason: string; linkListed: boolean } {
+    const replay = this.config.mode === "replay";
+    const linkListed = (dispute.links || []).some((link) => /adjudicate|require[-_]evidence/i.test(link.rel || ""));
+    if (!replay && !this.config.sandbox) return { available: false, reason: "PayPal-side controls exist only in the sandbox.", linkListed };
+    if (!member) return { available: false, reason: "Only for disputes this demo created.", linkListed };
+    if (dispute.status !== "UNDER_REVIEW") {
+      return { available: false, reason: "PayPal accepts these controls only while the dispute is UNDER_REVIEW.", linkListed };
+    }
+    return {
+      available: true,
+      reason: replay
+        ? "Replay: moves the fixture the way PayPal would. No PayPal call."
+        : "Sandbox only: asks PayPal to act as its own dispute team. Merchants cannot do this in production.",
+      linkListed,
+    };
+  }
+
+  /** Sandbox-only PayPal-side moves: ask the seller for evidence again, or decide the dispute. */
+  async sandboxControl(id: string, kind: SandboxKind, outcome: string | null, ip: string): Promise<Record<string, unknown>> {
+    const dispute = await this.mustDispute(id);
+    const order = await this.orderFor(dispute, false);
+    const options = this.sandboxOptions(dispute, this.noteDemo(dispute, order));
+    if (!options.available) throw new StatusError(`${options.reason} Nothing was sent.`, 409);
+    if (kind === "adjudicate" && outcome !== "SELLER_FAVOR" && outcome !== "BUYER_FAVOR") {
+      throw new Error("Pick SELLER_FAVOR or BUYER_FAVOR.");
+    }
+    this.limiter.takeApproval(ip);
+    const replay = this.config.mode === "replay";
+    const path = `/v1/customer/disputes/${id}/${kind === "adjudicate" ? "adjudicate" : "require-evidence"}`;
+    const body = kind === "adjudicate" ? { adjudication_outcome: outcome } : { action: "SELLER_EVIDENCE" };
+    if (replay) {
+      this.replaySandbox(dispute, kind, outcome);
+      this.syncMoney(dispute);
+    } else {
+      await this.rest.json("POST", path, body, { "PayPal-Request-Id": `mendcash-sbx-${randomUUID()}` });
+      await this.fetchDispute(id).catch((error: unknown) => {
+        console.error(error instanceof Error ? error.message : "Dispute refresh after sandbox control failed.");
+      });
+    }
+    this.sandboxCalls.push({ disputeId: id, kind, outcome, at: this.now().toISOString(), replay });
+    return {
+      replay,
+      path,
+      body,
+      status: this.disputes.get(id)?.status || null,
+      recoveredUsd: this.recoveredUsd(),
+      submittedUsd: this.submittedUsd(),
+    };
+  }
+
+  private replaySandbox(dispute: FixtureDispute, kind: SandboxKind, outcome: string | null): void {
+    const now = this.now();
+    const at = now.toISOString();
+    if (kind === "require_evidence") {
+      dispute.status = "WAITING_FOR_SELLER_RESPONSE";
+      dispute.dispute_state = "REQUIRED_ACTION";
+      dispute.seller_response_due_date = new Date(now.getTime() + 10 * 86_400_000).toISOString();
+      dispute.evidences.push({
+        evidence_type: "OTHER",
+        source: "REQUESTED_FROM_SELLER",
+        date: at,
+        dispute_life_cycle_stage: dispute.dispute_life_cycle_stage || "CHARGEBACK",
+      });
+      if (!dispute.links.some((link) => link.rel === "provide_evidence")) {
+        dispute.links.push({
+          href: `https://api-m.sandbox.paypal.com/v1/customer/disputes/${dispute.dispute_id}/provide-evidence`,
+          rel: "provide_evidence",
+          method: "POST",
+        });
+      }
+    } else {
+      dispute.status = "RESOLVED";
+      dispute.dispute_state = "RESOLVED";
+      (dispute as FixtureDispute & { dispute_outcome?: { outcome_code: string } }).dispute_outcome = {
+        outcome_code: outcome === "SELLER_FAVOR" ? "RESOLVED_SELLER_FAVOUR" : "RESOLVED_BUYER_FAVOUR",
+      };
+    }
+    dispute.update_time = at;
+    this.timeline.push({
+      id: `wh-${randomUUID()}`,
+      type: kind === "adjudicate" ? "CUSTOMER.DISPUTE.RESOLVED" : "CUSTOMER.DISPUTE.UPDATED",
+      disputeId: dispute.dispute_id,
+      at,
+      summary: kind === "adjudicate" ? `Replay: PayPal decided ${outcome === "SELLER_FAVOR" ? "for the seller" : "for the buyer"}` : "Replay: PayPal asked the seller for evidence",
+      replay: true,
+      verified: false,
+    });
   }
 
   async verifyAndIngest(headers: Record<string, string | undefined>, event: Record<string, unknown>, replayHeader: boolean): Promise<TimelineEvent> {
@@ -626,18 +1070,21 @@ export class Desk {
     }
   }
 
-  private build(
+  private async build(
     dispute: FixtureDispute,
     action: ActionName,
     fields: { partialAmount?: string; carrier?: string; trackingNumber?: string },
-  ): PreparedAction {
+  ): Promise<PreparedAction> {
     const order = this.orderSync(dispute);
     const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });
     const plan = planEvidence(dispute, order, refundIdOf(order, dispute));
     const draft = this.reads.get(dispute.dispute_id)?.result;
     const narrative = stripModelMoney(draft?.narrative || readWithRules(dispute).narrative);
     const claimClass = classifyClaim(dispute.reason, buyerTextOf(dispute), draft?.claimClass || null);
+    const mandate = action === "provide_evidence" ? await this.mandateEvidence(dispute, order) : null;
     return prepareAction({
+      mandateNote: mandate?.note,
+      attachment: mandate?.attachment,
       dispute,
       order,
       facts,
@@ -813,7 +1260,8 @@ export class Desk {
           source: "SUBMITTED_BY_SELLER",
           date: this.now().toISOString(),
           dispute_life_cycle_stage: "CHARGEBACK",
-        });
+          ...(Array.isArray(evidence.documents) ? { documents: evidence.documents as Array<{ name: string }> } : {}),
+        } as FixtureDispute["evidences"][number]);
       }
       dispute.status = "UNDER_REVIEW";
       dispute.dispute_state = "UNDER_PAYPAL_REVIEW";
@@ -847,7 +1295,13 @@ export class Desk {
 
   private async liveWrite(call: WriteCall): Promise<{ status: number; body: unknown }> {
     if (call.action === "provide_evidence") {
-      const body = await this.rest.multipart(call.path, call.body, call.requestId);
+      const files = (call.files || []).map((file) => ({
+        field: file.field,
+        name: file.name,
+        contentType: file.contentType,
+        data: Buffer.from(file.data, "base64"),
+      }));
+      const body = await this.rest.multipart(call.path, call.body, call.requestId, files);
       return { status: 200, body };
     }
     if (call.action === "send_invoice_reminder") {
@@ -869,6 +1323,7 @@ export class Desk {
     code: string,
     complaint: string,
     instant: boolean,
+    existing: FixtureOrder | null = null,
   ): Promise<string> {
     const wait = async (ms: number) => {
       if (!instant && ms) await new Promise((resolve) => setTimeout(resolve, ms));
@@ -877,11 +1332,11 @@ export class Desk {
     await wait(instant ? 0 : 250);
     this.simSeq += 1;
     const n = String(this.simSeq).padStart(4, "0");
-    const orderId = `MCSIM${n}ORD`;
-    const captureId = `MCSIM${n}CAP`;
+    const orderId = existing?.id || `MCSIM${n}ORD`;
+    const captureId = existing?.purchase_units[0]?.payments.captures[0]?.id || `MCSIM${n}CAP`;
     const disputeId = `PP-R-SIM-${n}`;
     const tracking = item.kind === "physical" ? { carrier: "UPS", number: `1ZMCRPLY${n}` } : null;
-    const order: FixtureOrder = {
+    const order: FixtureOrder = existing || {
       id: orderId,
       intent: "CAPTURE",
       status: "COMPLETED",
@@ -981,15 +1436,24 @@ export class Desk {
     return disputeId;
   }
 
-  private async liveSimulate(job: SimJob, item: CatalogItem, reasonCode: string, complaint: string): Promise<string> {
+  private async liveSimulate(
+    job: SimJob,
+    item: CatalogItem,
+    reasonCode: string,
+    complaint: string,
+    existing: FixtureOrder | null = null,
+  ): Promise<string> {
     mark(job, "order", "active");
     const reference = `mendcash-${Date.now()}`;
-    const created = await this.rest.json(
-      "POST",
-      "/v2/checkout/orders",
-      cardOrderBody({ item, reference, card: this.config.paypal.testCard }),
-      { "PayPal-Request-Id": reference, Prefer: "return=representation" },
-    );
+    // An agent purchase already has its order; the chargeback goes against that capture.
+    const created = existing
+      ? existing
+      : await this.rest.json(
+          "POST",
+          "/v2/checkout/orders",
+          cardOrderBody({ item, reference, card: this.config.paypal.testCard }),
+          { "PayPal-Request-Id": reference, Prefer: "return=representation" },
+        );
     const resolved = await orderWithMerchant(this.rest, created, this.config.paypal.merchantId);
     const orderId = stringOf(resolved.order.id);
     const unit = arrayOf(resolved.order.purchase_units)[0];
@@ -1058,6 +1522,41 @@ export class Desk {
       `Sandbox dispute ${chargeback.dispute_id} was created but is not readable yet. Refresh the inbox in a minute.`,
     );
   }
+}
+
+export type SandboxKind = "require_evidence" | "adjudicate";
+
+type AgentStep = { at: string; step: string; detail: string; state: "done" | "blocked" };
+
+export type AgentPurchaseResult = {
+  status: "bought" | "blocked";
+  replay: boolean;
+  steps: AgentStep[];
+  pick: AgentPick & { title: string };
+  checks: ConstraintCheck[];
+  transactionId: string | null;
+  customId: string | null;
+  orderId: string | null;
+  captureId: string | null;
+};
+
+function outcomeOf(dispute: FixtureDispute): string | null {
+  return (dispute as FixtureDispute & { dispute_outcome?: { outcome_code?: string } }).dispute_outcome?.outcome_code || null;
+}
+
+/** What PayPal's own order record says. custom_id is read from the purchase unit or, failing that, the capture. */
+function paypalRecordOf(order: FixtureOrder | null): PayPalRecord {
+  const unit = order?.purchase_units?.[0];
+  const capture = unit?.payments?.captures?.[0] as (FixtureOrder["purchase_units"][number]["payments"]["captures"][number] & { custom_id?: string }) | undefined;
+  const value = capture?.amount?.value;
+  return {
+    orderId: order?.id || null,
+    captureId: capture?.id || null,
+    customId: stringOf(unit?.custom_id) || stringOf(capture?.custom_id) || null,
+    orderCreateTime: order?.create_time || null,
+    captureCents: value && /^\d+(\.\d{1,2})?$/.test(value) ? Math.round(Number(value) * 100) : null,
+    currency: capture?.amount?.currency_code || null,
+  };
 }
 
 function sellerSentEvidence(dispute: FixtureDispute): boolean {

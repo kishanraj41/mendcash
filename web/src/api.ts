@@ -79,7 +79,13 @@ export type CaseView = {
   countdown: Countdown;
   records: { disputeId: string; captureId: string | null; orderId: string | null; trackerId: string | null };
   timeline: Array<{ id: string; type: string; summary: string; at: string; replay: boolean; verified: boolean }>;
+  agentClaim?: boolean;
+  agentProof?: AgentProof | null;
+  recommendation?: Recommendation;
+  sandbox?: SandboxOptions;
 };
+
+export type PayloadFile = { field: string; name: string; contentType: string; size: number; sha256: string };
 
 export type Payload = {
   action: string;
@@ -89,6 +95,49 @@ export type Payload = {
   requestId: string;
   body: unknown;
   summary: string;
+  files?: PayloadFile[];
+};
+
+export type ProofVerdict = "authorized" | "outside_mandate" | "integrity_failure" | "no_mandate";
+
+export type AgentProof = {
+  verdict: ProofVerdict;
+  label: string;
+  transactionId: string | null;
+  customId: string | null;
+  checks: Array<{ id: string; label: string; pass: boolean; detail: string; group: string; source: string }>;
+  summary: {
+    instruction: string;
+    merchant: string;
+    acceptableItems: string[];
+    quantity: number;
+    limit: string;
+    validFrom: string;
+    validUntil: string;
+    bought: string;
+    total: string;
+  } | null;
+  demoKeys: boolean;
+};
+
+export type Recommendation = {
+  decision: "contest" | "accept" | "review" | "wait" | "done";
+  headline: string;
+  reasons: Array<{ text: string; source: string }>;
+};
+
+export type SandboxOptions = { available: boolean; reason: string; linkListed: boolean };
+
+export type AgentPurchaseResult = {
+  status: "bought" | "blocked";
+  replay: boolean;
+  steps: Array<{ at: string; step: string; detail: string; state: "done" | "blocked" }>;
+  pick: { itemId: string; title: string; quantity: number; reason: string; source: string; model: string };
+  checks: AgentProof["checks"];
+  transactionId: string | null;
+  customId: string | null;
+  orderId: string | null;
+  captureId: string | null;
 };
 
 export type SimJob = {
@@ -160,4 +209,9 @@ export const api = {
   simulate: (body: { itemId: string; reasonCode: string; complaint: string }) => post<SimJob>("/api/simulate", body),
   job: (id: string) => fetch(`/api/simulate/${id}`).then((r) => parse<SimJob>(r)),
   invoices: () => fetch("/api/invoices").then((r) => parse<InvoiceView>(r)),
+  agentPurchase: (body: { instruction: string; allowedIds: string[]; maxUsd: string }) => post<AgentPurchaseResult>("/api/agent/purchase", body),
+  disputeAgentPurchase: (transactionId: string, complaint: string) =>
+    post<SimJob>(`/api/agent/purchases/${encodeURIComponent(transactionId)}/dispute`, { complaint }),
+  sandbox: (id: string, kind: "require-evidence" | "adjudicate", outcome?: "SELLER_FAVOR" | "BUYER_FAVOR") =>
+    post<{ status: string | null; recoveredUsd: string; submittedUsd: string; replay: boolean }>(`/api/disputes/${id}/sandbox/${kind}`, outcome ? { outcome } : {}),
 };
