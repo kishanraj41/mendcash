@@ -126,7 +126,7 @@ export type Recommendation = {
   reasons: Array<{ text: string; source: string }>;
 };
 
-export type SandboxOptions = { available: boolean; reason: string; linkListed: boolean };
+export type SandboxOptions = { available: boolean; reason: string; linkListed: boolean; adjudicate: boolean; requireEvidence: boolean };
 
 export type AgentPurchaseResult = {
   status: "bought" | "blocked";

@@ -711,7 +711,7 @@ export class Desk {
     const failed = checks.filter((check) => !check.pass);
     const base = { replay, pick: { ...pick, title: item.title }, checks };
     if (failed.length) {
-      log("guard", `Blocked before payment: ${failed.map((check) => check.label).join("; ")}. No order was created.`, "blocked");
+      log("guard", `Blocked before payment. Failed: ${failed.map((check) => `${check.label} (${check.detail})`).join("; ")}. No order was created.`, "blocked");
       return { ...base, status: "blocked", steps, transactionId: null, customId: null, orderId: null, captureId: null };
     }
     log("guard", `All ${checks.length} mandate checks pass, so the agent may pay.`);
@@ -859,20 +859,32 @@ export class Desk {
     return this.simulate({ itemId, reasonCode: "4853", complaint: text, orderId: order.id }, ip, instant);
   }
 
-  private sandboxOptions(dispute: FixtureDispute, member: boolean): { available: boolean; reason: string; linkListed: boolean } {
+  private sandboxOptions(
+    dispute: FixtureDispute,
+    member: boolean,
+  ): { available: boolean; reason: string; linkListed: boolean; adjudicate: boolean; requireEvidence: boolean } {
     const replay = this.config.mode === "replay";
-    const linkListed = (dispute.links || []).some((link) => /adjudicate|require[-_]evidence/i.test(link.rel || ""));
-    if (!replay && !this.config.sandbox) return { available: false, reason: "PayPal-side controls exist only in the sandbox.", linkListed };
-    if (!member) return { available: false, reason: "Only for disputes this demo created.", linkListed };
-    if (dispute.status !== "UNDER_REVIEW") {
-      return { available: false, reason: "PayPal accepts these controls only while the dispute is UNDER_REVIEW.", linkListed };
+    const rels = (dispute.links || []).map((link) => link.rel || "");
+    // PayPal refuses these calls (ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE) until it lists the link,
+    // which on chargebacks shows up a few minutes after the seller's evidence lands.
+    const adjudicateListed = rels.includes("adjudicate");
+    const requireListed = rels.some((rel) => /^require[-_]evidence$/.test(rel));
+    const linkListed = adjudicateListed || requireListed;
+    const off = (reason: string) => ({ available: false, reason, linkListed, adjudicate: false, requireEvidence: false });
+    if (!replay && !this.config.sandbox) return off("PayPal-side controls exist only in the sandbox.");
+    if (!member) return off("Only for disputes this demo created.");
+    if (dispute.status !== "UNDER_REVIEW") return off("PayPal accepts these controls only while the dispute is UNDER_REVIEW.");
+    if (replay) {
+      return { available: true, reason: "Replay: moves the fixture the way PayPal would. No PayPal call.", linkListed, adjudicate: true, requireEvidence: true };
     }
     return {
       available: true,
-      reason: replay
-        ? "Replay: moves the fixture the way PayPal would. No PayPal call."
-        : "Sandbox only: asks PayPal to act as its own dispute team. Merchants cannot do this in production.",
+      reason: linkListed
+        ? "Sandbox only: asks PayPal to act as its own dispute team. Merchants cannot do this in production."
+        : "PayPal has not offered these controls on this dispute yet. They usually appear a few minutes after the seller's evidence lands.",
       linkListed,
+      adjudicate: adjudicateListed,
+      requireEvidence: requireListed,
     };
   }
 
@@ -882,6 +894,9 @@ export class Desk {
     const order = await this.orderFor(dispute, false);
     const options = this.sandboxOptions(dispute, this.noteDemo(dispute, order));
     if (!options.available) throw new StatusError(`${options.reason} Nothing was sent.`, 409);
+    if (!(kind === "adjudicate" ? options.adjudicate : options.requireEvidence)) {
+      throw new StatusError(`PayPal does not list ${kind === "adjudicate" ? "adjudicate" : "require-evidence"} on this dispute yet. Nothing was sent.`, 409);
+    }
     if (kind === "adjudicate" && outcome !== "SELLER_FAVOR" && outcome !== "BUYER_FAVOR") {
       throw new Error("Pick SELLER_FAVOR or BUYER_FAVOR.");
     }

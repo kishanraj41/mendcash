@@ -271,9 +271,9 @@ export function SandboxControls({ disputeId, sandbox, onChanged }: { disputeId: 
       <h4>Play PayPal's side (sandbox only)</h4>
       <p className="meta">{sandbox.reason}</p>
       <div className="preset-row">
-        <button className="ghost" type="button" disabled={busy} onClick={() => run("require-evidence").catch(() => undefined)}>PayPal asks for evidence again</button>
-        <button className="primary" type="button" disabled={busy} onClick={() => run("adjudicate", "SELLER_FAVOR").catch(() => undefined)}>PayPal decides: seller wins</button>
-        <button className="danger" type="button" disabled={busy} onClick={() => run("adjudicate", "BUYER_FAVOR").catch(() => undefined)}>PayPal decides: buyer wins</button>
+        <button className="ghost" type="button" disabled={busy || !sandbox.requireEvidence} onClick={() => run("require-evidence").catch(() => undefined)}>PayPal asks for evidence again</button>
+        <button className="primary" type="button" disabled={busy || !sandbox.adjudicate} onClick={() => run("adjudicate", "SELLER_FAVOR").catch(() => undefined)}>PayPal decides: seller wins</button>
+        <button className="danger" type="button" disabled={busy || !sandbox.adjudicate} onClick={() => run("adjudicate", "BUYER_FAVOR").catch(() => undefined)}>PayPal decides: buyer wins</button>
       </div>
       <p aria-live="polite" className="meta">{message}</p>
     </section>
