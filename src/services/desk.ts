@@ -47,7 +47,7 @@ import { callToolkit, disputeItems, unwrap } from "../paypal/toolkit";
 import { CATALOG, REASON_OPTIONS, reasonByCode, type CatalogItem } from "../scenario/catalog";
 import { buildScenario, type FixtureDispute, type FixtureOrder } from "../scenario/planted";
 import { isDemoReference } from "../demo-ref";
-import { BUYER_PENDING_DETAIL, BUYER_PENDING_LABEL, buyerTextPending, listStatusTtlMs, newerListStatus, shouldAnalyzeBuyer } from "./inbox";
+import { BUYER_PENDING_DETAIL, BUYER_PENDING_LABEL, buyerTextPending, listStatusTtlMs, newerListStatus, shouldAnalyzeBuyer, sortNewestFirst } from "./inbox";
 import { previewInvoice, type Invoice, type InvoicePreview } from "./invoices";
 import { StatusError } from "../errors";
 
@@ -296,7 +296,7 @@ export class Desk {
   }
 
   async listDisputes(): Promise<Array<Record<string, unknown>>> {
-    const disputes = await this.allDisputes();
+    const disputes = sortNewestFirst(await this.allDisputes());
     return disputes.map((dispute) => {
       const order = this.orderSync(dispute);
       const facts = computeFigures(dispute, order, this.now(), { replay: this.config.mode === "replay" });

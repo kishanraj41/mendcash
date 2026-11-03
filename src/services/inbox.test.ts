@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BUYER_PENDING_DETAIL, BUYER_PENDING_LABEL, buyerTextPending, listStatusTtlMs, newerListStatus, shouldAnalyzeBuyer } from "./inbox";
+import { BUYER_PENDING_DETAIL, BUYER_PENDING_LABEL, buyerTextPending, listStatusTtlMs, newerListStatus, shouldAnalyzeBuyer, sortNewestFirst } from "./inbox";
 
 describe("inbox status", () => {
   it("keeps a newer detail status when the list row is older", () => {
@@ -51,5 +51,17 @@ describe("buyer text pending", () => {
     assert.equal(shouldAnalyzeBuyer(ready, "auto", true, true), false);
     assert.equal(shouldAnalyzeBuyer(ready, false, true, false), false);
     assert.equal(shouldAnalyzeBuyer(ready, "auto", false, false), false);
+  });
+});
+
+describe("inbox order", () => {
+  it("lists the newest dispute first", () => {
+    const sorted = sortNewestFirst([
+      { dispute_id: "PP-D-1", create_time: "2026-10-30T10:00:00.000Z", update_time: "2026-10-31T10:00:00.000Z" },
+      { dispute_id: "PP-D-3", create_time: "2026-11-01T10:00:00.000Z" },
+      { dispute_id: "PP-D-2", create_time: "2026-10-31T10:00:00.000Z" },
+      { dispute_id: "PP-D-0" },
+    ]);
+    assert.deepEqual(sorted.map((d) => d.dispute_id), ["PP-D-3", "PP-D-2", "PP-D-1", "PP-D-0"]);
   });
 });
