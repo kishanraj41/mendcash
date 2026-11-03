@@ -41,6 +41,8 @@ export type Session = {
   webhooksConfigured: boolean;
   recoveredUsd: string;
   submittedUsd: string;
+  /** Claims the seller accepted (refunds). Not part of Submitted. */
+  refundedUsd?: string;
   csrfToken: string;
   atStakeUsd: string;
   caps: { maxDailyUsd: number; analysesPerIp: number; simulationsPerIp: number };
@@ -49,7 +51,11 @@ export type Session = {
   countersReady: boolean;
 };
 
+export type ReviewState = { outcome: string | null; since: string };
+
 export type CaseView = {
+  /** PayPal accepted a sandbox decision and has not resolved the dispute yet. */
+  review?: ReviewState | null;
   mode: "live" | "replay";
   replay: boolean;
   modeLabel: string;
@@ -213,5 +219,5 @@ export const api = {
   disputeAgentPurchase: (transactionId: string, complaint: string) =>
     post<SimJob>(`/api/agent/purchases/${encodeURIComponent(transactionId)}/dispute`, { complaint }),
   sandbox: (id: string, kind: "require-evidence" | "adjudicate", outcome?: "SELLER_FAVOR" | "BUYER_FAVOR") =>
-    post<{ status: string | null; recoveredUsd: string; submittedUsd: string; replay: boolean }>(`/api/disputes/${id}/sandbox/${kind}`, outcome ? { outcome } : {}),
+    post<{ status: string | null; review?: ReviewState | null; recoveredUsd: string; submittedUsd: string; replay: boolean }>(`/api/disputes/${id}/sandbox/${kind}`, outcome ? { outcome } : {}),
 };

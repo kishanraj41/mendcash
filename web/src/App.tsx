@@ -83,6 +83,10 @@ export function App() {
       api.case(selected, false)
         .then((view) => {
           if (!cancel) showCase(view);
+          // Counters follow the case: when PayPal resolves a reviewed decision, Recovered moves on this tick.
+          return api.session().then((next) => {
+            if (!cancel) setSession(next);
+          });
         })
         .catch(() => undefined);
     }, 8000);
@@ -124,6 +128,11 @@ export function App() {
             <span>Recovered</span>
             <strong className={session?.countersReady ? undefined : "pending"}>{counterText(session?.countersReady, session?.recoveredUsd)}</strong>
             <small>resolved for the seller</small>
+          </div>
+          <div className="stake">
+            <span>Refunded</span>
+            <strong className={session?.countersReady ? undefined : "pending"}>{counterText(session?.countersReady, session?.refundedUsd)}</strong>
+            <small>claims you accepted</small>
           </div>
           <div className="stake">
             <span>Open stake</span>
@@ -334,7 +343,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
       </div>
       <DecisionBanner rec={view.recommendation} />
       <MandateProof proof={view.agentProof} disputeId={view.dispute.dispute_id} />
-      <SandboxControls disputeId={view.dispute.dispute_id} sandbox={view.sandbox} onChanged={onChanged} />
+      <SandboxControls disputeId={view.dispute.dispute_id} sandbox={view.sandbox} review={view.review ?? null} replay={view.replay} onChanged={onChanged} />
       <div className="figures">
         {view.figures.filter((figure) => figure.key !== "deadline").map((figure) => (
           <div className="figure" key={figure.key}>

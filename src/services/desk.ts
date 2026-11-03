@@ -98,6 +98,12 @@ export class Desk {
   private readonly createdIds = new Set<string>();
   private readonly submitted = new Map<string, number>();
   private readonly recovered = new Map<string, number>();
+  /** Claims the seller accepted (full or partial refund). Counted apart from Submitted. */
+  private readonly folded = new Map<string, number>();
+  /** Writes this server made and PayPal returned 200 for, so the counters move before PayPal's record catches up. */
+  private readonly sellerActions = new Map<string, { kind: "evidence" | "fold"; cents: number | null; at: string }>();
+  /** Sandbox decisions PayPal accepted but has not resolved yet. */
+  private readonly decisions = new Map<string, { outcome: string; at: string }>();
   private fillJob: Promise<void> | null = null;
   private initialScan: Promise<void> | null = null;
   private countersReady = false;
@@ -137,6 +143,7 @@ export class Desk {
       perform: async (call) => {
         const result = this.config.mode === "replay" ? await this.replayWrite(call) : await this.liveWrite(call);
         this.writes.push(call);
+        this.noteSellerAction(call);
         if (this.config.mode === "live") {
           await this.fetchDispute(call.disputeId).catch((error: unknown) => {
             console.error(error instanceof Error ? error.message : "Dispute refresh after write failed.");
@@ -199,6 +206,47 @@ export class Desk {
     return centsToMoney(this.sum(this.recovered));
   }
 
+  /** Claims the seller accepted and refunded. Never part of Submitted. */
+  refundedUsd(): string {
+    return centsToMoney(this.sum(this.folded));
+  }
+
+  /** Every counter in one object, so a write's response can update the header at once. */
+  async counters(): Promise<{ submittedUsd: string; recoveredUsd: string; refundedUsd: string; atStakeUsd: string }> {
+    return { submittedUsd: this.submittedUsd(), recoveredUsd: this.recoveredUsd(), refundedUsd: this.refundedUsd(), atStakeUsd: await this.atStakeUsd() };
+  }
+
+  private noteSellerAction(call: { action: string; disputeId: string; body: Record<string, unknown> }): void {
+    const at = this.now().toISOString();
+    if (call.action === "provide_evidence") {
+      this.sellerActions.set(call.disputeId, { kind: "evidence", cents: null, at });
+    } else if (call.action === "accept_claim" || call.action === "partial_refund") {
+      const refund = (call.body.refund_amount as { value?: unknown } | undefined)?.value;
+      const cents = typeof refund === "string" && Number.isFinite(Number(refund)) ? Math.round(Number(refund) * 100) : null;
+      this.sellerActions.set(call.disputeId, { kind: "fold", cents, at });
+    }
+  }
+
+  /** The seller accepted the claim: this server did it, or PayPal's record says so. */
+  private foldedCents(dispute: FixtureDispute, stakeCents: number): number | null {
+    const local = this.sellerActions.get(dispute.dispute_id);
+    if (local?.kind === "fold") return local.cents ?? stakeCents;
+    return sellerAccepted(dispute) ? stakeCents : null;
+  }
+
+  private contested(dispute: FixtureDispute): boolean {
+    return sellerSentEvidence(dispute) || this.sellerActions.get(dispute.dispute_id)?.kind === "evidence";
+  }
+
+  /** PayPal took a sandbox decision (200) but has not resolved the dispute yet. */
+  private reviewOf(dispute: FixtureDispute): { outcome: string | null; since: string } | null {
+    if (dispute.status === "RESOLVED") return null;
+    const local = this.decisions.get(dispute.dispute_id);
+    if (local) return { outcome: local.outcome, since: local.at };
+    const adjudication = dispute.adjudications?.find((row) => row.adjudication_time);
+    return adjudication ? { outcome: null, since: adjudication.adjudication_time || "" } : null;
+  }
+
   private sum(rows: Map<string, number>): number {
     let total = 0;
     for (const cents of rows.values()) total += cents;
@@ -210,10 +258,21 @@ export class Desk {
     if (!this.createdIds.has(id)) {
       this.submitted.delete(id);
       this.recovered.delete(id);
+      this.folded.delete(id);
       return;
     }
     const facts = computeFigures(dispute, this.orderSync(dispute), this.now(), { replay: this.config.mode === "replay" });
     const cents = facts.stakeCents || 0;
+    const fold = this.foldedCents(dispute, cents);
+    if (fold !== null) {
+      // An accepted claim is a refund, not a contest: never in Submitted or Recovered.
+      this.submitted.delete(id);
+      this.recovered.delete(id);
+      if (fold) this.folded.set(id, fold);
+      else this.folded.delete(id);
+      return;
+    }
+    this.folded.delete(id);
     const outcome = (dispute as FixtureDispute & { dispute_outcome?: { outcome_code?: string } }).dispute_outcome?.outcome_code || "";
     if (dispute.status === "RESOLVED" && /SELLER/i.test(outcome)) {
       this.submitted.delete(id);
@@ -225,7 +284,7 @@ export class Desk {
       this.recovered.delete(id);
       return;
     }
-    const sent = sellerSentEvidence(dispute);
+    const sent = this.contested(dispute);
     if (sent && cents) this.submitted.set(id, cents);
     else this.submitted.delete(id);
   }
@@ -323,7 +382,7 @@ export class Desk {
   async atStakeUsd(): Promise<string> {
     let cents = 0;
     for (const dispute of this.disputes.values()) {
-      if (!this.createdIds.has(dispute.dispute_id) || !awaitingResponse(dispute)) continue;
+      if (!this.createdIds.has(dispute.dispute_id) || !awaitingResponse(dispute) || this.sellerActions.has(dispute.dispute_id)) continue;
       const facts = computeFigures(dispute, this.orderSync(dispute), this.now(), { replay: this.config.mode === "replay" });
       cents += facts.stakeCents || 0;
     }
@@ -369,6 +428,8 @@ export class Desk {
       plan,
       proof: agentProof,
       sellerSent: sellerSentEvidence(dispute),
+      folded: this.foldedCents(dispute, facts.stakeCents || 0) !== null,
+      review: Boolean(this.reviewOf(dispute)),
       // Replay deadlines are simulated, so a fixture date in the past is not a reason to fold.
       overdue: facts.countdown.overdue && !facts.countdown.simulated,
       smallClaimCents: Math.round(this.config.mandate.smallClaimUsd * 100),
@@ -378,6 +439,7 @@ export class Desk {
       agentProof,
       recommendation,
       sandbox: this.sandboxOptions(dispute, member),
+      review: this.reviewOf(dispute),
       mode: this.config.mode,
       replay: this.config.mode === "replay",
       modeLabel: this.modeLabel(),
@@ -453,8 +515,7 @@ export class Desk {
       replay: this.config.mode === "replay",
       payload: done.prepared,
       result: done.result,
-      recoveredUsd: this.recoveredUsd(),
-      submittedUsd: this.submittedUsd(),
+      ...(await this.counters()),
     };
   }
 
@@ -909,6 +970,8 @@ export class Desk {
       this.syncMoney(dispute);
     } else {
       await this.rest.json("POST", path, body, { "PayPal-Request-Id": `mendcash-sbx-${randomUUID()}` });
+      if (kind === "adjudicate" && outcome) this.decisions.set(id, { outcome, at: this.now().toISOString() });
+      else this.decisions.delete(id);
       await this.fetchDispute(id).catch((error: unknown) => {
         console.error(error instanceof Error ? error.message : "Dispute refresh after sandbox control failed.");
       });
@@ -919,8 +982,8 @@ export class Desk {
       path,
       body,
       status: this.disputes.get(id)?.status || null,
-      recoveredUsd: this.recoveredUsd(),
-      submittedUsd: this.submittedUsd(),
+      review: this.disputes.get(id) ? this.reviewOf(this.disputes.get(id)!) : null,
+      ...(await this.counters()),
     };
   }
 
@@ -1024,6 +1087,7 @@ export class Desk {
       webhooksConfigured: Boolean(this.config.paypal.webhookId),
       recoveredUsd: this.recoveredUsd(),
       submittedUsd: this.submittedUsd(),
+      refundedUsd: this.refundedUsd(),
       caps: {
         maxDailyUsd: this.config.caps.maxDailyUsd,
         analysesPerIp: this.config.caps.analysesPerIp,
@@ -1137,6 +1201,13 @@ export class Desk {
         const listedStatus = typeof row.status === "string" ? row.status : "";
         const listedAt = typeof row.update_time === "string" ? row.update_time : "";
         const next = newerListStatus(cached, { status: listedStatus, update_time: listedAt });
+        if (next.status === "RESOLVED" && cached.status !== "RESOLVED") {
+          // A list row has no dispute_outcome. Fetch the detail now so Recovered moves with the right outcome.
+          this.fetchedAt.delete(id);
+          stale.push(id);
+          rows.push(cached);
+          continue;
+        }
         if (next.status !== cached.status || (next.update_time && next.update_time !== cached.update_time)) {
           cached.status = next.status;
           if (next.update_time) cached.update_time = next.update_time;
@@ -1584,7 +1655,18 @@ function paypalRecordOf(order: FixtureOrder | null): PayPalRecord {
 }
 
 function sellerSentEvidence(dispute: FixtureDispute): boolean {
-  return (dispute.evidences || []).some((item) => item.source === "SUBMITTED_BY_SELLER" && item.evidence_type !== "CREATE");
+  return (dispute.evidences || []).some(
+    (item) => item.source === "SUBMITTED_BY_SELLER" && item.evidence_type !== "CREATE" && !isAcceptEntry(item),
+  );
+}
+
+/** PayPal records an accepted claim as a seller entry with action_info.action = ACCEPT_CLAIM. It is not evidence. */
+function isAcceptEntry(item: FixtureDispute["evidences"][number]): boolean {
+  return /^ACCEPT_CLAIM$/i.test(item.action_info?.action || "");
+}
+
+function sellerAccepted(dispute: FixtureDispute): boolean {
+  return (dispute.evidences || []).some((item) => item.source === "SUBMITTED_BY_SELLER" && isAcceptEntry(item));
 }
 
 function awaitingResponse(dispute: FixtureDispute): boolean {

@@ -20,6 +20,10 @@ export type DecisionInput = {
   plan: EvidencePlan;
   proof: AgentProof | null;
   sellerSent: boolean;
+  /** The seller already accepted the claim (refund). */
+  folded?: boolean;
+  /** PayPal accepted a sandbox decision and is still reviewing it. */
+  review?: boolean;
   overdue: boolean;
   smallClaimCents: number;
 };
@@ -32,6 +36,20 @@ export function recommend(input: DecisionInput): Recommendation {
       decision: "done",
       headline: `Resolved${input.outcome ? `: ${input.outcome.replaceAll("_", " ").toLowerCase()}` : ""}.`,
       reasons: [{ text: `PayPal status ${input.status}`, source: "PayPal dispute" }],
+    };
+  }
+  if (input.folded) {
+    return {
+      decision: "done",
+      headline: "Claim accepted. The refund is with PayPal.",
+      reasons: [{ text: "Seller accepted the claim (action_info ACCEPT_CLAIM)", source: "PayPal dispute" }],
+    };
+  }
+  if (input.review) {
+    return {
+      decision: "wait",
+      headline: "PayPal is reviewing your decision. Recovered updates when PayPal resolves the dispute.",
+      reasons: [{ text: "PayPal accepted the decision request; status is still UNDER_REVIEW", source: "PayPal dispute" }],
     };
   }
   if (input.sellerSent && input.status === "UNDER_REVIEW") {

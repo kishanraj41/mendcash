@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type AgentProof, type AgentPurchaseResult, type Catalog, type Recommendation, type SandboxOptions, type SimJob } from "./api";
+import { api, type AgentProof, type AgentPurchaseResult, type Catalog, type Recommendation, type ReviewState, type SandboxOptions, type SimJob } from "./api";
 
 const DEFAULT_COMPLAINT = "I never agreed to this purchase. My AI shopping assistant bought it on its own.";
 
@@ -247,9 +247,33 @@ export function MandateProof({ proof, disputeId }: { proof: AgentProof | null | 
 }
 
 /** Sandbox-only stand-ins for PayPal's dispute team, so the full loop can finish in a demo. */
-export function SandboxControls({ disputeId, sandbox, onChanged }: { disputeId: string; sandbox: SandboxOptions | undefined; onChanged: () => void }) {
+export function SandboxControls({
+  disputeId,
+  sandbox,
+  review,
+  replay,
+  onChanged,
+}: {
+  disputeId: string;
+  sandbox: SandboxOptions | undefined;
+  review: ReviewState | null;
+  replay: boolean;
+  onChanged: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  if (review) {
+    const side = review.outcome === "SELLER_FAVOR" ? " (seller wins)" : review.outcome === "BUYER_FAVOR" ? " (buyer wins)" : "";
+    return (
+      <section className="sandbox-box" aria-label="PayPal review">
+        <h4>PayPal is reviewing your decision{side}</h4>
+        <p className="meta">
+          PayPal accepted the request{review.since ? ` at ${new Date(review.since).toLocaleTimeString()}` : ""} and the dispute is still under review. Nothing is recovered yet.
+          Recovered updates on its own when PayPal resolves the dispute.
+        </p>
+      </section>
+    );
+  }
   if (!sandbox?.available) return null;
 
   async function run(kind: "require-evidence" | "adjudicate", outcome?: "SELLER_FAVOR" | "BUYER_FAVOR") {
@@ -257,7 +281,13 @@ export function SandboxControls({ disputeId, sandbox, onChanged }: { disputeId: 
     setMessage(null);
     try {
       const result = await api.sandbox(disputeId, kind, outcome);
-      setMessage(`Status ${result.status?.replaceAll("_", " ") || "unknown"}. Recovered $${result.recoveredUsd}.`);
+      setMessage(
+        result.status === "RESOLVED" || replay
+          ? `Status ${result.status?.replaceAll("_", " ") || "unknown"}. Recovered $${result.recoveredUsd}.`
+          : kind === "adjudicate"
+            ? "PayPal accepted the request and is reviewing your decision. Recovered updates when PayPal resolves the dispute."
+            : `PayPal accepted the request. Status ${result.status?.replaceAll("_", " ") || "unknown"}.`,
+      );
       onChanged();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "PayPal rejected the sandbox control.");
