@@ -494,6 +494,7 @@ export class Desk {
     job: SimJob;
     done: Promise<void>;
   } {
+    this.requireSandbox();
     const existing = input.orderId ? this.orders.get(input.orderId) || null : null;
     if (input.orderId && !existing) throw new Error("Order not found. Nothing was filed.");
     const item = CATALOG.find((row) => row.id === input.itemId);
@@ -644,6 +645,7 @@ export class Desk {
    * mandate, and only then is a PayPal order created with custom_id = "ap2:" + transaction_id.
    */
   async agentPurchase(input: { instruction: string; allowedIds: string[]; maxUsd: string }, ip: string): Promise<AgentPurchaseResult> {
+    this.requireSandbox();
     const instruction = input.instruction.trim();
     if (instruction.length < 3 || instruction.length > 500) throw new Error("Type a shopping instruction between 3 and 500 characters.");
     const allowed = CATALOG.filter((item) => input.allowedIds.includes(item.id));
@@ -837,6 +839,13 @@ export class Desk {
     this.orders.set(orderId, order);
     this.captureToOrder.set(captureId, orderId);
     return { orderId, captureId, createdAt: stringOf(order.create_time) || this.now().toISOString() };
+  }
+
+  /** Card orders and chargebacks use a test card: allowed in replay or against the PayPal sandbox only. */
+  private requireSandbox(): void {
+    if (this.config.mode === "live" && !this.config.sandbox) {
+      throw new StatusError("Simulated purchases and chargebacks run only against the PayPal sandbox. Nothing was sent.", 409);
+    }
   }
 
   /** The buyer disputes the agent's purchase: a 4853 chargeback against that same capture. */
