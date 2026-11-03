@@ -42,7 +42,7 @@ AI shopping agents now place orders for people. When the buyer later says "my as
 4. **The dispute arrives.** MendCash reads `custom_id`, retrieves the mandates, and re-verifies 12 checks: signatures, hashes, receipts against PayPal's order and capture ids, amount, item, merchant, and window.
 5. **Fight or fold, decided by code.** Authorized means contest. Outside the mandate means accept, because contesting would argue against your own record.
 6. **Evidence goes out as a PDF.** `provide-evidence` gets the verification PDF as a file part, and the preview shows its size and SHA-256 before you approve.
-7. **PayPal decides.** In the sandbox, MendCash can play PayPal's side (`require-evidence`, `adjudicate`), so the loop ends at **Recovered** in one sitting.
+7. **PayPal decides.** In the sandbox, MendCash can play PayPal's side (`require-evidence`, `adjudicate`) once PayPal lists those links on the dispute. In replay the loop ends at **Recovered** in one sitting.
 
 | Planted agent dispute | What the records show | Verdict | Decision |
 |---|---|---|---|
@@ -315,7 +315,7 @@ The eval checks amounts against [`scripts/recompute.ts`](scripts/recompute.ts), 
 ### AI tools disclosure
 
 - **At runtime:** DeepSeek V4.1 Flash reads buyer complaints and drafts evidence notes, Qwen3-30B-A3B routes requests, and DeepSeek V4 Pro is the fallback. None of them computes money or deadlines.
-- **During development:** [Cursor](https://cursor.com) and Grok Bot helped with code, research, testing and docs, including this README and its recordings. I reviewed and own every design decision and the final code.
+- **During development:** [Cursor](https://cursor.com), Claude and Grok Bot helped with code, research, testing and docs, including this README and its recordings. I reviewed and own every design decision and the final code.
 
 ## License
 

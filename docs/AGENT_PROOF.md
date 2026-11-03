@@ -51,4 +51,6 @@ The same constraint code runs twice: as a guard **before** the agent may pay, an
 1. Create an agent order and `GET` it: `custom_id` is on the purchase unit and the capture.
 2. Dispute it with reason `4853`, then wait for `WAITING_FOR_SELLER_RESPONSE`.
 3. Send evidence: PayPal accepts the `evidence-file` part and the `documents` name.
-4. Check that `adjudicate` (`SELLER_FAVOR`) is accepted while the dispute is `UNDER_REVIEW`, that the `CUSTOMER.DISPUTE.RESOLVED` webhook arrives, and that **Recovered** rises.
+4. Check that `adjudicate` (`SELLER_FAVOR`) is accepted while the dispute is `UNDER_REVIEW` and PayPal lists the `adjudicate` link, that the `CUSTOMER.DISPUTE.RESOLVED` webhook arrives, and that **Recovered** rises.
+
+Results on Nov 2, 2026 (sandbox, dispute PP-R-KHC-10196083, $18.00, reason 4853): checks 1–3 passed, and PayPal stored the PDF byte for byte. `require-evidence` and `adjudicate` were refused with `ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE` until PayPal listed their links, which happened about 3.5 minutes after the seller's evidence landed. After that, both returned 200. After `adjudicate`, PayPal recorded an adjudication (`PAYOUT_TO_BUYER`, reason `REPRESENTED_BY_PAYPAL`), but the chargeback stayed `UNDER_REVIEW` / `UNDER_PAYPAL_REVIEW` for at least 23 minutes. Recovered rises live only once PayPal marks the dispute `RESOLVED` with a seller outcome. In replay, it rises at once.
