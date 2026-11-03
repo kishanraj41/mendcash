@@ -288,7 +288,7 @@ DeepSeek V4.1 Flash was the only model in the selection study that passed every 
 ## Testing and eval
 
 ```bash
-npm test                  # 36 tests, including the full agent-purchase loop over HTTP
+npm test                  # 37 tests, including the full agent-purchase loop over HTTP
 npm run typecheck
 npm run eval              # offline: 32 planted disputes vs fixtures/ground_truth.json, plus 6 agent-purchase disputes
 npm run eval -- --live    # live: needs keys and a prior SEED_LIVE=1 npm run seed; sends no writes
