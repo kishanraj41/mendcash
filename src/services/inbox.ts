@@ -43,3 +43,17 @@ function timeMs(value: string | undefined): number {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+/** Inbox order: newest dispute first (create_time, then update_time), ties by id so the order is stable. */
+export function sortNewestFirst<T extends { dispute_id: string; create_time?: string; update_time?: string }>(disputes: T[]): T[] {
+  const time = (value?: string) => {
+    const ms = value ? Date.parse(value) : NaN;
+    return Number.isFinite(ms) ? ms : 0;
+  };
+  return [...disputes].sort(
+    (a, b) =>
+      time(b.create_time) - time(a.create_time) ||
+      time(b.update_time) - time(a.update_time) ||
+      b.dispute_id.localeCompare(a.dispute_id),
+  );
+}

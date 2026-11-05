@@ -53,6 +53,13 @@ export function classFromText(text: string): ClaimClass {
   return "other";
 }
 
+/** The buyer says software acting for them made the purchase. No PayPal reason code expresses this. */
+export function mentionsAgentPurchase(text: string): boolean {
+  const agent = /\b(ai|agent|assistant|bot|copilot|chatgpt|gemini|claude|perplexity|alexa|siri)\b/i;
+  const bought = /\b(bought|buy|ordered|order|purchased|purchase|placed|spent|charged)\b/i;
+  return text.split(/(?<=[.!?])\s+/).some((sentence) => agent.test(sentence) && bought.test(sentence));
+}
+
 /** PayPal's reason code wins when it names a claim. Buyer text cannot override it. */
 export function classifyClaim(reason: string | undefined, buyerText: string, modelClass?: string | null): ClaimClass {
   const fromReason = classFromReason(reason);

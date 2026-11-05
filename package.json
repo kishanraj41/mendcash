@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@paypal/agent-toolkit": "^1.11.0",
-    "express": "^4.22.3"
+    "express": "^4.22.3",
+    "pdf-lib": "1.17.1"
   },
   "devDependencies": {
     "@types/express": "^4.17.25",

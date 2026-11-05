@@ -10,6 +10,8 @@ export type WriteCall = {
   requestId: string;
   body: Record<string, unknown>;
   disputeId: string;
+  /** File parts for multipart writes. Shown to the merchant as name, size and SHA-256 before approval. */
+  files?: PreparedAction["files"];
 };
 
 export type WritePort = {
@@ -72,6 +74,7 @@ export class ApprovalGate {
       requestId: record.prepared.requestId,
       body: record.prepared.body,
       disputeId: record.disputeId,
+      ...(record.prepared.files?.length ? { files: record.prepared.files } : {}),
     };
     if (call.path.includes("?") || call.path.includes("%3F")) {
       throw new Error("Refusing a write whose path contains a query string.");

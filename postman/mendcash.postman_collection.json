@@ -1,0 +1,74 @@
+{
+  "info": {
+    "name": "MendCash agent-purchase loop",
+    "description": "Run in order against replay mode (MENDCASH_MODE=replay npm start). Postman keeps the session cookie; the first request stores the CSRF token.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "csrf", "value": "" },
+    { "key": "txn", "value": "" },
+    { "key": "jobId", "value": "" },
+    { "key": "disputeId", "value": "PP-R-AG-0001" }
+  ],
+  "item": [
+    {
+      "name": "1 Session",
+      "event": [{ "listen": "test", "script": { "exec": ["pm.collectionVariables.set('csrf', pm.response.json().csrfToken);"] } }],
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/session" }
+    },
+    {
+      "name": "2 Agent buys under a mandate",
+      "event": [{ "listen": "test", "script": { "exec": ["pm.collectionVariables.set('txn', pm.response.json().transactionId);"] } }],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "x-mendcash-csrf", "value": "{{csrf}}" }],
+        "url": "{{baseUrl}}/api/agent/purchase",
+        "body": { "mode": "raw", "raw": "{\"instruction\":\"Stickers for my laptop\",\"allowedIds\":[\"stickers\",\"poster\"],\"maxUsd\":\"20\"}" }
+      }
+    },
+    {
+      "name": "3 Signed mandates by transaction_id",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/ap2/checkout-mandates/{{txn}}" }
+    },
+    {
+      "name": "4 Buyer disputes the agent purchase",
+      "event": [{ "listen": "test", "script": { "exec": ["pm.collectionVariables.set('disputeId', pm.response.json().disputeId);"] } }],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "x-mendcash-csrf", "value": "{{csrf}}" }, { "key": "x-mendcash-instant", "value": "1" }],
+        "url": "{{baseUrl}}/api/agent/purchases/{{txn}}/dispute?wait=1",
+        "body": { "mode": "raw", "raw": "{}" }
+      }
+    },
+    { "name": "5 Case with proof and recommendation", "request": { "method": "GET", "url": "{{baseUrl}}/api/disputes/{{disputeId}}" } },
+    {
+      "name": "6 Preview evidence (file shown as size and SHA-256)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "x-mendcash-csrf", "value": "{{csrf}}" }],
+        "url": "{{baseUrl}}/api/disputes/{{disputeId}}/preview",
+        "body": { "mode": "raw", "raw": "{\"action\":\"provide_evidence\"}" }
+      }
+    },
+    {
+      "name": "7 Approve and send",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "x-mendcash-csrf", "value": "{{csrf}}" }],
+        "url": "{{baseUrl}}/api/disputes/{{disputeId}}/approve",
+        "body": { "mode": "raw", "raw": "{\"action\":\"provide_evidence\"}" }
+      }
+    },
+    {
+      "name": "8 Sandbox: PayPal decides for the seller",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "x-mendcash-csrf", "value": "{{csrf}}" }],
+        "url": "{{baseUrl}}/api/disputes/{{disputeId}}/sandbox/adjudicate",
+        "body": { "mode": "raw", "raw": "{\"outcome\":\"SELLER_FAVOR\"}" }
+      }
+    },
+    { "name": "9 Verification PDF", "request": { "method": "GET", "url": "{{baseUrl}}/api/disputes/{{disputeId}}/evidence.pdf" } }
+  ]
+}

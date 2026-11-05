@@ -33,7 +33,11 @@ export type FixtureDispute = {
     date: string;
     dispute_life_cycle_stage: string;
     evidence_info?: { tracking_info: Array<{ carrier_name: string; tracking_number: string }> };
+    /** PayPal marks an accepted claim with action_info.action = ACCEPT_CLAIM on a seller entry. */
+    action_info?: { action?: string; response_option?: string };
   }>;
+  /** Sandbox adjudications PayPal has recorded. A non-empty list on an unresolved dispute means PayPal is reviewing. */
+  adjudications?: Array<{ type?: string; adjudication_time?: string; reason?: string; dispute_life_cycle_stage?: string }>;
   messages?: Array<{ posted_by: string; time_posted: string; content: string }>;
   offer: { buyer_requested_amount: Money };
   refund_details: { allowed_refund_amount: Money };
@@ -50,6 +54,7 @@ export type FixtureOrder = {
   purchase_units: Array<{
     reference_id: string;
     description: string;
+    custom_id?: string;
     amount: Money;
     payee: { email_address: string; merchant_id: string };
     shipping?: { trackers: Array<{ id: string; status: string; carrier: string; tracking_number: string }> };

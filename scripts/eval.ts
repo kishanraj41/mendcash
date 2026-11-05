@@ -1,8 +1,11 @@
 import fs from "fs";
 import path from "path";
-import { classifyClaim } from "../src/agent/classify";
+import { classFromText, classifyClaim } from "../src/agent/classify";
 import { buyerTextOf, planEvidence, refundIdOf } from "../src/agent/evidence";
-import { readWithRules, type ReaderInput, type ReaderResult } from "../src/agent/reader";
+import { createNebiusClient } from "../src/agent/llm";
+import { readWithModel, readWithRules, type ReaderInput, type ReaderResult } from "../src/agent/reader";
+import { demoKeys } from "../src/mandate/keys";
+import { buildAgenticScenario } from "../src/scenario/agentic";
 import { loadConfig } from "../src/config";
 import { RECORDED_AGENT_USAGE, RECORDED_ROUTER_USAGE, formatUsdAmount, priceMicroUsd } from "../src/money/cost";
 import { computeFigures } from "../src/money/engine";
@@ -105,6 +108,50 @@ async function liveEval(): Promise<void> {
   console.log("OK");
 }
 
+/**
+ * The AI-only metric. PayPal's reason code is hidden, so the model has to read the buyer's words.
+ * Reported next to a keyword baseline on the same text. Calls Nebius only; PayPal is not touched.
+ */
+async function textOnlyEval(): Promise<void> {
+  const config = loadConfig();
+  if (!config.nebius.configured) fail("--text-only needs NEBIUS_API_KEY. No request was sent.");
+  const client = createNebiusClient(config);
+  const rows = [
+    ...buildScenario().disputes.map((row) => ({ id: row.dispute.dispute_id, input: row.dispute, expected: row.expected.class as string, agent: false })),
+    ...buildAgenticScenario(demoKeys(config.mandate.keySeed)).map((row) => ({ id: row.expected.disputeId, input: row.dispute, expected: "", agent: row.expected.agentClaim })),
+  ];
+  let modelHits = 0;
+  let baselineHits = 0;
+  let classCases = 0;
+  let agentHits = 0;
+  let micro = 0;
+  const lats: number[] = [];
+  for (const row of rows) {
+    const text = buyerTextOf(row.input);
+    const hidden = { evidences: row.input.evidences, messages: (row.input as ReaderInput).messages };
+    const result = await readWithModel(hidden, client, config);
+    lats.push(result.latencyMs);
+    for (const segment of result.segments || []) {
+      const price = config.prices[segment.model];
+      if (price) micro += priceMicroUsd(segment.usage, price);
+    }
+    if (result.agentClaim === row.agent) agentHits += 1;
+    if (!row.expected) continue;
+    classCases += 1;
+    if (result.modelClass === row.expected) modelHits += 1;
+    if (classFromText(text) === row.expected) baselineHits += 1;
+  }
+  console.log("mode: live model, reason code hidden");
+  console.log(`label: ${config.nebius.agentModel} read buyer text only. PayPal was not called.`);
+  console.log(`class_cases: ${classCases}`);
+  console.log(`model_class_accuracy: ${(modelHits / classCases).toFixed(3)} (${modelHits}/${classCases})`);
+  console.log(`keyword_baseline_accuracy: ${(baselineHits / classCases).toFixed(3)} (${baselineHits}/${classCases})`);
+  console.log(`agent_purchase_flag_match: ${agentHits}/${rows.length}`);
+  console.log(`total_cost_usd: ${formatUsdAmount(micro)}`);
+  console.log(`latency_p50_ms: ${percentile(lats, 50).toFixed(0)}`);
+  console.log("OK");
+}
+
 function normalizeMoney(amount: string): string {
   const [dollars, fraction = ""] = amount.split(".");
   return `${Number(dollars)}.${(fraction + "00").slice(0, 2)}`;
@@ -112,6 +159,10 @@ function normalizeMoney(amount: string): string {
 
 async function main(): Promise<void> {
   loadLocalEnv();
+  if (process.argv.includes("--text-only")) {
+    await textOnlyEval();
+    return;
+  }
   if (process.argv.includes("--live")) {
     await liveEval();
     return;
@@ -217,7 +268,37 @@ async function main(): Promise<void> {
   console.log(`offline_pipeline_p95_ms: ${percentile(latencies, 95).toFixed(3)}`);
   console.log("selection_study_latency_ms: 9200-15000 (Oct 30 model-selection task, not this dispute desk)");
 
+  // Agent-purchase disputes: signed mandates checked against PayPal's order record.
+  const agentic = buildAgenticScenario(demoKeys(config.mandate.keySeed));
+  let verdictHits = 0;
+  let decisionHits = 0;
+  let pdfHits = 0;
+  let agentFlagHits = 0;
+  for (const row of agentic) {
+    const view = (await desk.getCase(row.expected.disputeId, "198.51.100.12", false)) as {
+      agentProof: { verdict: string } | null;
+      agentClaim: boolean;
+      recommendation: { decision: string };
+    };
+    if (view.agentProof?.verdict === row.expected.verdict) verdictHits += 1;
+    if (view.recommendation.decision === row.expected.decision) decisionHits += 1;
+    if (view.agentClaim === row.expected.agentClaim) agentFlagHits += 1;
+    const preview = await desk.preview(row.expected.disputeId, "provide_evidence", {});
+    if (Boolean(preview.payload?.files?.length) === row.expected.pdf) pdfHits += 1;
+  }
+  const agentWrites = desk.writes.length + hostileDesk.writes.length - unapproved;
+  console.log(`agent_cases: ${agentic.length}`);
+  console.log(`agent_verdict_match: ${verdictHits}/${agentic.length}`);
+  console.log(`agent_decision_match: ${decisionHits}/${agentic.length}`);
+  console.log(`agent_pdf_attached_when_authorized: ${pdfHits}/${agentic.length}`);
+  console.log(`agent_claim_flag_match: ${agentFlagHits}/${agentic.length}`);
+  console.log("agent_basis: demo Ed25519 keys from a public seed; signatures prove integrity, not identity.");
+
   const problems: string[] = [];
+  if (verdictHits !== agentic.length || decisionHits !== agentic.length || pdfHits !== agentic.length || agentFlagHits !== agentic.length) {
+    problems.push("agent mandates");
+  }
+  if (agentWrites !== 0) problems.push("agent previews wrote");
   if (classRate !== 1) problems.push("classification");
   if (evidenceRate !== 1) problems.push("evidence");
   if (amountRate !== 1) problems.push("amounts");

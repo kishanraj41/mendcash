@@ -1,3 +1,5 @@
+import { PUBLIC_DEMO_SEED } from "./mandate/keys";
+
 export type AppMode = "live" | "replay";
 
 export type ModelPrices = {
@@ -40,6 +42,8 @@ export type AppConfig = {
   };
   /** Empty unless MENDCASH_STATE_FILE is set. Live mode still persists under the OS temp dir. */
   stateFile: string;
+  /** AP2-shaped agent mandates. The default seed is public: signatures show integrity, not identity. */
+  mandate: { keySeed: string; smallClaimUsd: number };
 };
 
 const BANNED = "Qwen3-235B";
@@ -149,6 +153,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       reserveUsd: 0.008,
     },
     stateFile: env.MENDCASH_STATE_FILE?.trim() || "",
+    mandate: {
+      keySeed: env.MANDATE_KEY_SEED?.trim() || PUBLIC_DEMO_SEED,
+      smallClaimUsd: num(env.SMALL_CLAIM_USD, 15),
+    },
   };
 }
 
