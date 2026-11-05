@@ -22,16 +22,25 @@ export function App() {
   const [simulateOpen, setSimulateOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
   const [loadingCase, setLoadingCase] = useState(false);
+  const [inboxError, setInboxError] = useState<string | null>(null);
 
   async function refreshLists(): Promise<boolean> {
     const [nextSession, list, invoiceView, nextCatalog] = await Promise.all([
       api.session(),
-      api.disputes(),
+      api.disputes().then(
+        (value) => ({ ok: true as const, value }),
+        (err: unknown) => ({ ok: false as const, message: err instanceof Error ? err.message : "The inbox could not load." }),
+      ),
       api.invoices(),
       api.catalog(),
     ]);
     setSession(nextSession);
-    setRows(list.disputes);
+    if (list.ok) {
+      setRows(list.value.disputes);
+      setInboxError(null);
+    } else {
+      setInboxError(list.message);
+    }
     setInvoices(invoiceView);
     setCatalog(nextCatalog);
     return nextSession.countersReady;
@@ -160,8 +169,13 @@ export function App() {
             <h2>Inbox</h2>
             <span className="meta">{rows.length}</span>
           </div>
+          {inboxError && (
+            <p className="error" role="alert" style={{ margin: 12 }}>
+              {inboxError} The inbox keeps retrying.
+            </p>
+          )}
           <div className="rows">
-            {rows.map((row) => (
+            {!inboxError && rows.map((row) => (
               <button key={row.disputeId} className={row.disputeId === selected ? "row active" : "row"} type="button" onClick={() => setSelected(row.disputeId)}>
                 <span>{row.claimLabel || prettyReason(row.reason)}</span>
                 <span className="amt">${row.amount ?? "—"}</span>

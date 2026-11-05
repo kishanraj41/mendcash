@@ -48,7 +48,7 @@ export function recommend(input: DecisionInput): Recommendation {
   if (input.review) {
     return {
       decision: "wait",
-      headline: "PayPal is reviewing your decision. Recovered updates when PayPal resolves the dispute.",
+      headline: "PayPal accepted the decision request and is reviewing it. Recovered moves only if PayPal resolves it for the seller.",
       reasons: [{ text: "PayPal accepted the decision request; status is still UNDER_REVIEW", source: "PayPal dispute" }],
     };
   }

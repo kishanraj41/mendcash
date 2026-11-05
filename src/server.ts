@@ -48,7 +48,13 @@ export function createApp(options: AppOptions = {}) {
         return;
       }
       const raw = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
-      const event = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      let event: Record<string, unknown> = {};
+      try {
+        event = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      } catch {
+        res.status(400).json({ error: "invalid JSON" });
+        return;
+      }
       const replayHeader = req.header("x-mendcash-replay") === "1";
       const headers = paypalHeaders(req);
       const stored = await desk.verifyAndIngest(headers, event, replayHeader);

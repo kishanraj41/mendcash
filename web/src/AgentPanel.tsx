@@ -263,13 +263,13 @@ export function SandboxControls({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   if (review) {
-    const side = review.outcome === "SELLER_FAVOR" ? " (seller wins)" : review.outcome === "BUYER_FAVOR" ? " (buyer wins)" : "";
+    const side = review.outcome === "SELLER_FAVOR" ? "seller wins" : review.outcome === "BUYER_FAVOR" ? "buyer wins" : "";
     return (
       <section className="sandbox-box" aria-label="PayPal review">
-        <h4>PayPal is reviewing your decision{side}</h4>
+        <h4>PayPal accepted the {side ? `"${side}" ` : ""}request and is reviewing it</h4>
         <p className="meta">
-          PayPal accepted the request{review.since ? ` at ${new Date(review.since).toLocaleTimeString()}` : ""} and the dispute is still under review. Nothing is recovered yet.
-          Recovered updates on its own when PayPal resolves the dispute.
+          Accepted{review.since ? ` at ${new Date(review.since).toLocaleTimeString()}` : ""}. The outcome is PayPal's call, not guaranteed: in our sandbox tests, card chargebacks
+          resolved about a day later as a payout to the buyer. Nothing is recovered yet. Recovered moves only if PayPal resolves the dispute for the seller.
         </p>
       </section>
     );
@@ -285,7 +285,7 @@ export function SandboxControls({
         result.status === "RESOLVED" || replay
           ? `Status ${result.status?.replaceAll("_", " ") || "unknown"}. Recovered $${result.recoveredUsd}.`
           : kind === "adjudicate"
-            ? "PayPal accepted the request and is reviewing your decision. Recovered updates when PayPal resolves the dispute."
+            ? "PayPal accepted the request and is reviewing it. The outcome is PayPal's call; Recovered moves only if it resolves for the seller."
             : `PayPal accepted the request. Status ${result.status?.replaceAll("_", " ") || "unknown"}.`,
       );
       onChanged();
@@ -302,8 +302,8 @@ export function SandboxControls({
       <p className="meta">{sandbox.reason}</p>
       <div className="preset-row">
         <button className="ghost" type="button" disabled={busy || !sandbox.requireEvidence} onClick={() => run("require-evidence").catch(() => undefined)}>PayPal asks for evidence again</button>
-        <button className="primary" type="button" disabled={busy || !sandbox.adjudicate} onClick={() => run("adjudicate", "SELLER_FAVOR").catch(() => undefined)}>PayPal decides: seller wins</button>
-        <button className="danger" type="button" disabled={busy || !sandbox.adjudicate} onClick={() => run("adjudicate", "BUYER_FAVOR").catch(() => undefined)}>PayPal decides: buyer wins</button>
+        <button className="primary" type="button" disabled={busy || !sandbox.adjudicate} onClick={() => run("adjudicate", "SELLER_FAVOR").catch(() => undefined)}>Ask PayPal to decide: seller wins</button>
+        <button className="danger" type="button" disabled={busy || !sandbox.adjudicate} onClick={() => run("adjudicate", "BUYER_FAVOR").catch(() => undefined)}>Ask PayPal to decide: buyer wins</button>
       </div>
       <p aria-live="polite" className="meta">{message}</p>
     </section>
