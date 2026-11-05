@@ -64,7 +64,18 @@ describe("paypal rest", () => {
       return { status: 200, headers: {}, body: JSON.stringify({ verification_status: "SUCCESS" }) };
     };
     const rest = new PayPalRest({ config: config(), http });
-    const ok = await verifyWebhookSignature(rest, config(), { "paypal-transmission-id": "t" }, { id: "WH-1" });
+    const ok = await verifyWebhookSignature(
+      rest,
+      config(),
+      {
+        "paypal-auth-algo": "SHA256withRSA",
+        "paypal-cert-url": "https://api.sandbox.paypal.com/v1/notifications/certs/CERT",
+        "paypal-transmission-id": "t",
+        "paypal-transmission-sig": "sig",
+        "paypal-transmission-time": "2026-11-04T00:00:00Z",
+      },
+      { id: "WH-1" },
+    );
     assert.equal(ok, true);
     assert.equal(calls.some((c) => c.includes("verify-webhook-signature")), true);
     assert.equal(calls.join("\n").includes("token-value"), false);

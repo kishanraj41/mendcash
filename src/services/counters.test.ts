@@ -61,7 +61,7 @@ describe("counters", () => {
     const reviewing = (await desk.getCase(row.dispute_id, "10.3.3.3", false)) as { review: { since: string } | null; recommendation: { decision: string; headline: string } };
     assert.equal(reviewing.review?.since, "2026-10-31T17:40:00.000Z");
     assert.equal(reviewing.recommendation.decision, "wait");
-    assert.match(reviewing.recommendation.headline, /reviewing your decision/);
+    assert.match(reviewing.recommendation.headline, /reviewing it/);
     assert.equal(Number(desk.recoveredUsd()), recoveredBefore, "no win claimed while PayPal reviews");
 
     row.status = "RESOLVED";

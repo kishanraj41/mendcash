@@ -55,6 +55,16 @@ export async function callToolkit(config: AppConfig, name: string, args: Record<
   return result;
 }
 
+/** The toolkit reports failures as { error: { message } } instead of throwing. Returns that message, or null. */
+export function toolkitError(result: unknown): string | null {
+  const value = unwrap(result);
+  if (!isRecord(value) || !("error" in value) || "items" in value) return null;
+  const error = value.error;
+  if (typeof error === "string") return error;
+  if (isRecord(error) && typeof error.message === "string") return error.message;
+  return "PayPal toolkit error";
+}
+
 export function disputeItems(result: unknown): Array<Record<string, unknown>> {
   const value = unwrap(result);
   if (Array.isArray(value)) return value.filter(isRecord);

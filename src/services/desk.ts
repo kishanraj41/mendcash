@@ -43,7 +43,7 @@ import { computeFigures, type MoneyFacts } from "../money/engine";
 import { PayPalRest } from "../paypal/rest";
 import { cardOrderBody, processChargebackBody } from "../paypal/chargeback";
 import { MISSING_MERCHANT_ID, orderWithMerchant } from "../paypal/merchant";
-import { callToolkit, disputeItems, unwrap } from "../paypal/toolkit";
+import { callToolkit, disputeItems, toolkitError, unwrap } from "../paypal/toolkit";
 import { CATALOG, REASON_OPTIONS, reasonByCode, type CatalogItem } from "../scenario/catalog";
 import { buildScenario, type FixtureDispute, type FixtureOrder } from "../scenario/planted";
 import { isDemoReference } from "../demo-ref";
@@ -1033,7 +1033,7 @@ export class Desk {
     }
     const { verifyWebhookSignature } = await import("../paypal/webhook");
     const ok = await verifyWebhookSignature(this.rest, this.config, headers, event);
-    if (!ok) throw new Error("PayPal webhook signature was not verified. Nothing was stored.");
+    if (!ok) throw new StatusError("signature not verified", 401);
     return this.ingestWebhook(event, true, false);
   }
 
@@ -1253,7 +1253,18 @@ export class Desk {
     const seen = new Set<string>();
     const all: Array<Record<string, unknown>> = [];
     for (let page = 1; page <= 8; page += 1) {
-      const listed = disputeItems(await callToolkit(this.config, "list_disputes", { page_size: 50, page }));
+      const result = await callToolkit(this.config, "list_disputes", { page_size: 50, page });
+      const failure = toolkitError(result);
+      if (failure) {
+        console.error(`PayPal list_disputes failed: ${failure}`);
+        throw new StatusError(
+          /auth|token|credential|401|unauthori/i.test(failure)
+            ? "PayPal sign-in failed, so the inbox cannot load. Check the sandbox PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET."
+            : "PayPal did not return the dispute list. Try again in a minute.",
+          502,
+        );
+      }
+      const listed = disputeItems(result);
       if (!listed.length) break;
       let added = 0;
       for (const row of listed) {

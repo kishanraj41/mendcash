@@ -14,9 +14,9 @@ AI reads the messy text. Code does the math. You approve the exact API call.
 
 <br>
 
-<img src="docs/assets/hero.gif" alt="MendCash agent-purchase flow: the mandate guard blocks an overreach, an in-mandate purchase is bought, the buyer files a chargeback, code says Contest with 12/12 checks, the approval card shows the evidence PDF, and Recovered rises after PayPal decides for the seller" width="900">
+<img src="docs/assets/hero.gif" alt="MendCash agent-purchase flow: the mandate guard blocks an overreach, an in-mandate purchase is bought, the buyer files a chargeback, code says Contest with 12/12 checks, the approval card shows the evidence PDF, and, in replay, Recovered rises after PayPal decides for the seller" width="900">
 
-<sub>Recorded in replay mode: fixture data, no PayPal or model calls. The same flow runs against the PayPal sandbox; live results are in <a href="docs/AGENT_PROOF.md">docs/AGENT_PROOF.md</a>.</sub>
+<sub>Recorded in replay mode: fixture data, no PayPal or model calls. The same flow runs against the PayPal sandbox up to the decision. There, PayPal settled our test chargebacks for the buyer, so the Recovered rise is shown in replay only. Live results are in <a href="docs/AGENT_PROOF.md">docs/AGENT_PROOF.md</a>.</sub>
 
 </div>
 
@@ -42,7 +42,7 @@ AI shopping agents now place orders for people. When the buyer later says "my as
 4. **The dispute arrives.** MendCash reads `custom_id`, retrieves the mandates, and re-verifies 12 checks: signatures, hashes, receipts against PayPal's order and capture ids, amount, item, merchant, and window.
 5. **Fight or fold, decided by code.** Authorized means contest. Outside the mandate means accept, because contesting would argue against your own record.
 6. **Evidence goes out as a PDF.** `provide-evidence` gets the verification PDF as a file part, and the preview shows its size and SHA-256 before you approve.
-7. **PayPal decides.** In the sandbox, MendCash can play PayPal's side (`require-evidence`, `adjudicate`) once PayPal lists those links on the dispute. In replay the loop ends at **Recovered** in one sitting.
+7. **PayPal decides.** In the sandbox, MendCash can play PayPal's side (`require-evidence`, `adjudicate`) once PayPal lists those links on the dispute. In replay the loop ends at **Recovered** in one sitting. On the live sandbox, asking for "seller wins" does not force a seller win: both test card chargebacks resolved about 24 hours later as `RESOLVED_WITH_PAYOUT`, with $18.00 refunded to the buyer, so Recovered correctly stayed at $0.00 ([details](docs/AGENT_PROOF.md)).
 
 | Planted agent dispute | What the records show | Verdict | Decision |
 |---|---|---|---|
@@ -64,7 +64,7 @@ npm ci && npm run build && MENDCASH_MODE=replay npm start   # http://localhost:3
 1. **Let an agent buy** → **Agent overreaches** → sign: the guard blocks it, no order.
 2. **Within the mandate** → sign: bought, with `custom_id ap2:…`.
 3. **Buyer disputes it** → the case opens: **Contest**, 12/12 checks, links to the signed mandates and the PDF.
-4. **Send evidence** → **Approve and send** → **PayPal decides: seller wins** → Recovered goes up by the order amount.
+4. **Send evidence** → **Approve and send** → **Ask PayPal to decide: seller wins** → Recovered goes up by the order amount. (That is replay. In the live sandbox, PayPal makes the final call; see step 7.)
 
 ## Features
 

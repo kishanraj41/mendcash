@@ -58,7 +58,18 @@ Results on Nov 2, 2026 (sandbox, dispute PP-R-KHC-10196083, $18.00, reason 4853)
 Follow-up on Nov 3, 2026 (live sandbox):
 
 - **PP-R-KHC-10196083**, re-fetched at 12:54 AM CST, about 8 hours after `adjudicate`: still `UNDER_REVIEW` / `UNDER_PAYPAL_REVIEW`, with no `dispute_outcome` and the same single adjudication record. It has not resolved, so Recovered has not moved.
-- **PP-R-UGA-10196105**, a fresh agent purchase ($18.00, order 38T30419EE002873V, capture 4BE141796A6814050), 4853 chargeback. Waiting for seller after about 4 minutes; Contest; evidence with the PDF approved (200). The approval response itself moved Submitted +$18.00 and Open stake −$18.00. PayPal listed `adjudicate` about 3.5 minutes later, and `adjudicate` `SELLER_FAVOR` returned 200. The case now shows **PayPal is reviewing your decision (seller wins)** instead of a win, and Recovered stays $0.00.
+- **PP-R-UGA-10196105**, a fresh agent purchase ($18.00, order 38T30419EE002873V, capture 4BE141796A6814050), 4853 chargeback. Waiting for seller after about 4 minutes; Contest; evidence with the PDF approved (200). The approval response itself moved Submitted +$18.00 and Open stake −$18.00. PayPal listed `adjudicate` about 3.5 minutes later, and `adjudicate` `SELLER_FAVOR` returned 200. The case then showed PayPal reviewing the request instead of a win, and Recovered stayed at $0.00.
 - **PP-R-IXY-10196084**, the fold case (accept claim, $18.00): PayPal marks the seller entry `action_info.action = ACCEPT_CLAIM`. MendCash now counts it under **Refunded** ($18.00), not Submitted. It is still `UNDER_REVIEW` at PayPal.
 
-How Recovered moves live: the open case re-reads the dispute every 8 seconds and the inbox every 12. When a list row turns `RESOLVED`, MendCash fetches the detail (the list has no outcome) before it moves any counter. A `CUSTOMER.DISPUTE.RESOLVED` webhook does the same when `PAYPAL_WEBHOOK_ID` is set. This path is covered by a fixture test (`src/services/counters.test.ts`). It has not been seen live yet, because no sandbox chargeback has resolved.
+How Recovered moves live: the open case re-reads the dispute every 8 seconds and the inbox every 12. When a list row turns `RESOLVED`, MendCash fetches the detail (the list has no outcome) before it moves any counter. A `CUSTOMER.DISPUTE.RESOLVED` webhook does the same when `PAYPAL_WEBHOOK_ID` is set. This path is covered by a fixture test (`src/services/counters.test.ts`). The resolve path ran live (below), but only with a buyer outcome, so a live rise in Recovered has not been seen.
+
+Outcome (Nov 3–4, 2026, live sandbox): both contested chargebacks resolved about 24 hours after `adjudicate` `SELLER_FAVOR` returned 200, and **both went to the buyer**:
+
+- **PP-R-KHC-10196083**: `RESOLVED` on Nov 3 at 10:53 PM CST, `outcome_code` `RESOLVED_WITH_PAYOUT` (reason `REPRESENTED_BY_PAYPAL`), $18.00 refunded to the buyer.
+- **PP-R-UGA-10196105**: `RESOLVED` on Nov 4 at 12:53 AM CST, `RESOLVED_WITH_PAYOUT`, $18.00 refunded to the buyer.
+
+Caveats:
+
+- In the sandbox, `adjudicate` `SELLER_FAVOR` is a request. It does not decide the case. For these card chargebacks PayPal paid out the buyer anyway, which matches the `PAYOUT_TO_BUYER` adjudication record it wrote right after the call.
+- MendCash counted both correctly: Recovered counts only seller outcomes, so it stayed at $0.00 and both moved out of Open stake.
+- **Recovered rising is demonstrated in replay only** (the hero GIF and the eval). The live UI now says PayPal *accepted* the "seller wins" request and that the outcome is not guaranteed.
