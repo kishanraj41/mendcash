@@ -61,7 +61,7 @@ AI shopping agents now place orders for people. When the buyer later says "my as
 npm ci && npm run build && MENDCASH_MODE=replay npm start   # http://localhost:3000
 ```
 
-1. **Let an agent buy** → **Agent overreaches** → sign: the guard blocks it, no order.
+1. **Let an agent buy** → **Agent overreaches** → sign: the guard blocks it, no order. The preset's $15 limit is below every catalog price, so whatever the agent picks (live model or replay rules), the signed amount check fails.
 2. **Within the mandate** → sign: bought, with `custom_id ap2:…`.
 3. **Buyer disputes it** → the case opens: **Contest**, 12/12 checks, links to the signed mandates and the PDF.
 4. **Send evidence** → **Approve and send** → **Ask PayPal to decide: seller wins** → Recovered goes up by the order amount. (That is replay. In the live sandbox, PayPal makes the final call; see step 7.)

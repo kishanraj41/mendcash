@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { AGENT_PRESETS } from "../../src/mandate/presets";
 import { api, type AgentProof, type AgentPurchaseResult, type Catalog, type Recommendation, type ReviewState, type SandboxOptions, type SimJob } from "./api";
 
 const DEFAULT_COMPLAINT = "I never agreed to this purchase. My AI shopping assistant bought it on its own.";
 
-const PRESETS = [
-  { label: "Within the mandate", instruction: "Get me something to decorate my laptop, under $20.", allowed: ["stickers", "poster"], maxUsd: "20" },
-  { label: "Agent overreaches", instruction: "Buy the brand kit for the launch.", allowed: ["stickers", "logo-pack"], maxUsd: "75" },
-];
+const PRESETS = AGENT_PRESETS;
 
 /** The buyer grants a mandate, the agent shops, code checks the pick, then PayPal gets an order with custom_id. */
 export function AgentPurchase({ catalog, replay, onClose, onFound }: { catalog: Catalog; replay: boolean; onClose: () => void; onFound: (id: string) => void }) {
