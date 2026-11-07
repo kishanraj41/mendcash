@@ -61,6 +61,10 @@ export function recommend(input: DecisionInput): Recommendation {
   }
   if (input.proof && input.proof.verdict !== "no_mandate") {
     if (input.proof.verdict === "authorized") {
+      if (input.proof.itemSwapWarning) return {
+        decision: "review", headline: "Your call. The agent bought a different item than the buyer requested.",
+        reasons: [{ text: input.proof.itemSwapWarning, source: "Signed buyer instruction vs. purchased item" }],
+      };
       return {
         decision: "contest",
         headline: "Contest. The buyer's own signed mandate authorized this agent purchase.",

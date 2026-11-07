@@ -19,6 +19,7 @@ export type Countdown = {
 };
 
 export type DisputeRow = {
+  outcome?: string | null;
   disputeId: string;
   reason: string;
   status: string;
@@ -61,6 +62,7 @@ export type CaseView = {
   modeLabel: string;
   dispute: {
     dispute_id: string;
+    dispute_outcome?: { outcome_code?: string };
     reason: string;
     status: string;
     dispute_life_cycle_stage?: string;
@@ -107,6 +109,7 @@ export type Payload = {
 export type ProofVerdict = "authorized" | "outside_mandate" | "integrity_failure" | "no_mandate";
 
 export type AgentProof = {
+  itemSwapWarning?: string | null;
   verdict: ProofVerdict;
   label: string;
   transactionId: string | null;
@@ -215,7 +218,7 @@ export const api = {
   simulate: (body: { itemId: string; reasonCode: string; complaint: string }) => post<SimJob>("/api/simulate", body),
   job: (id: string) => fetch(`/api/simulate/${id}`).then((r) => parse<SimJob>(r)),
   invoices: () => fetch("/api/invoices").then((r) => parse<InvoiceView>(r)),
-  agentPurchase: (body: { instruction: string; allowedIds: string[]; maxUsd: string }) => post<AgentPurchaseResult>("/api/agent/purchase", body),
+  agentPurchase: (body: { instruction: string; allowedIds: string[]; maxUsd: string; rogueTest?: boolean }) => post<AgentPurchaseResult>("/api/agent/purchase", body),
   disputeAgentPurchase: (transactionId: string, complaint: string) =>
     post<SimJob>(`/api/agent/purchases/${encodeURIComponent(transactionId)}/dispute`, { complaint }),
   sandbox: (id: string, kind: "require-evidence" | "adjudicate", outcome?: "SELLER_FAVOR" | "BUYER_FAVOR") =>

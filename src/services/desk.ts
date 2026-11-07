@@ -365,6 +365,7 @@ export class Desk {
         disputeId: dispute.dispute_id,
         reason: dispute.reason,
         status: dispute.status,
+        outcome: outcomeOf(dispute),
         lifecycle: dispute.dispute_life_cycle_stage,
         amount: facts.stake,
         currency: facts.currency,
@@ -646,7 +647,7 @@ export class Desk {
   ): Promise<{ note: string; attachment: { name: string; contentType: string; data: Uint8Array } } | null> {
     const proof = this.proofFor(order, false);
     // Only an authorized purchase is evidence for the seller. Anything else would argue against our own record.
-    if (!proof || proof.verdict !== "authorized") return null;
+    if (!proof || proof.verdict !== "authorized" || proof.itemSwapWarning) return null;
     const data = await this.renderEvidencePdf(dispute, order, proof);
     return {
       note:
@@ -705,7 +706,7 @@ export class Desk {
    * The buyer grants a mandate, the shopping agent picks, code checks the pick against the signed
    * mandate, and only then is a PayPal order created with custom_id = "ap2:" + transaction_id.
    */
-  async agentPurchase(input: { instruction: string; allowedIds: string[]; maxUsd: string }, ip: string): Promise<AgentPurchaseResult> {
+  async agentPurchase(input: { instruction: string; allowedIds: string[]; maxUsd: string; rogueTest?: boolean }, ip: string): Promise<AgentPurchaseResult> {
     this.requireSandbox();
     const instruction = input.instruction.trim();
     if (instruction.length < 3 || instruction.length > 500) throw new Error("Type a shopping instruction between 3 and 500 characters.");
@@ -716,7 +717,7 @@ export class Desk {
     this.limiter.takeSimulation(ip);
     let keepQuota = false;
     try {
-      const result = await this.runAgentPurchase(instruction, allowed, maxCents, ip);
+      const result = await this.runAgentPurchase(instruction, allowed, maxCents, ip, input.rogueTest === true);
       keepQuota = result.status === "bought";
       return result;
     } finally {
@@ -724,7 +725,7 @@ export class Desk {
     }
   }
 
-  private async runAgentPurchase(instruction: string, allowed: CatalogItem[], maxCents: number, ip: string): Promise<AgentPurchaseResult> {
+  private async runAgentPurchase(instruction: string, allowed: CatalogItem[], maxCents: number, ip: string, rogueTest = false): Promise<AgentPurchaseResult> {
     const replay = this.config.mode === "replay";
     const now = this.now();
     const at = now.toISOString();
@@ -745,9 +746,13 @@ export class Desk {
     });
     log("mandate", `Buyer signed open mandates: ${allowed.map((item) => item.title).join(", ")}, quantity 1, up to ${centsToMoney(maxCents)} USD, valid 7 days.`);
 
-    const pick = await this.agentPick(instruction, allowed.map((item) => item.id), centsToMoney(maxCents), ip);
+    const pick: AgentPick = rogueTest
+      ? { itemId: "brand-kit", quantity: 1, source: "simulated", model: "rogue-agent-simulated", reason: "Intentional rogue-agent test; no model pick is claimed.", usage: { prompt_tokens: 0, completion_tokens: 0 }, latencyMs: 0 }
+      : await this.agentPick(instruction, allowed.map((item) => item.id), centsToMoney(maxCents), ip);
     const item = CATALOG.find((row) => row.id === pick.itemId) || allowed[0];
-    log("pick", `Agent picked ${pick.quantity} x ${item.title} (${pick.source === "model" ? pick.model : "replay rules"}). ${pick.reason}`);
+    log("pick", pick.source === "simulated"
+      ? `Rogue agent (simulated) picked ${item.title} $${item.amount}. ${pick.reason}`
+      : `Agent picked ${pick.quantity} x ${item.title} (${pick.source === "model" ? pick.model : replay ? "replay rules" : "rules fallback"}). ${pick.reason}`);
 
     this.agentSeq += 1;
     const n = String(this.agentSeq).padStart(4, "0");
@@ -830,7 +835,7 @@ export class Desk {
         const pick = await this.limiter.withSlot(() =>
           pickWithModel({ instruction, catalog: CATALOG, allowedIds, maxUsd, model: this.config.nebius.agentModel }, createNebiusClient(this.config)),
         );
-        const price = this.config.prices[pick.model];
+        const price = this.config.prices[pick.source === "model" ? pick.model : this.config.nebius.agentModel];
         reservation.commit(price && pick.usage.prompt_tokens ? priceMicroUsd(pick.usage, price) : 0);
         return pick;
       } catch (error) {
@@ -838,7 +843,8 @@ export class Desk {
         console.error(error instanceof Error ? error.message : "Shopping agent call failed; using rules.");
       }
     }
-    return pickWithRules(instruction, CATALOG, allowedIds);
+    const fallback = pickWithRules(instruction, CATALOG, allowedIds);
+    return this.config.mode === "live" ? { ...fallback, model: "rules-fallback", reason: `Rules fallback. ${fallback.reason}` } : fallback;
   }
 
   private replayAgentOrder(n: string, item: CatalogItem, quantity: number, customId: string): { orderId: string; captureId: string; createdAt: string } {

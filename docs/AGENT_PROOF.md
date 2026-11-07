@@ -50,13 +50,7 @@ The same constraint code runs twice: as a guard **before** the agent may pay, an
 
 The loop was run end to end against the live PayPal sandbox on Nov 2–4, 2026.
 
-| Step | Result |
-|---|---|
-| Agent order created, then read back with `GET` | `custom_id` present on the purchase unit and the capture |
-| Chargeback with reason `4853` | Reached `WAITING_FOR_SELLER_RESPONSE` after about 4 minutes |
-| Evidence sent with the verification PDF | Accepted (200). PayPal stored the `evidence-file` part byte for byte |
-| `require-evidence` and `adjudicate` (`SELLER_FAVOR`) | Accepted (200) once PayPal listed those links, about 3.5 minutes after the evidence |
-| Accept claim (the fold case) | Recorded by PayPal as `ACCEPT_CLAIM`; MendCash counts it under **Refunded** |
+See [README → Live agent loop (PayPal sandbox)](../README.md#live-agent-loop-paypal-sandbox) for the validation table and the latest run.
 
 Disputes used: PP-R-KHC-10196083 and PP-R-UGA-10196105 (contested, $18.00 each) and PP-R-IXY-10196084 (accepted, $18.00).
 
@@ -65,3 +59,9 @@ Disputes used: PP-R-KHC-10196083 and PP-R-UGA-10196105 (contested, $18.00 each) 
 **Where Recovered is shown.** Because the sandbox resolves these test chargebacks for the buyer, a rising Recovered counter is demonstrated in replay mode (the hero recording and the eval). The resolve path itself ran live, and the seller-outcome case is covered by a fixture test ([`src/services/counters.test.ts`](../src/services/counters.test.ts)).
 
 **How status updates.** An open case re-reads the dispute every 8 seconds and the inbox every 12. When a row turns `RESOLVED`, MendCash fetches the dispute detail (the list has no outcome) before it moves any counter. A `CUSTOMER.DISPUTE.RESOLVED` webhook does the same when `PAYPAL_WEBHOOK_ID` is set.
+
+## Instruction-item mismatch
+
+The 12 mandate checks are unchanged. A separate deterministic check compares catalog names and aliases in the signed buyer instruction with the purchased item. If the instruction names a different item, the proof panel warns and the recommendation is **Your call**, even when all 12 checks pass. MendCash does not automatically attach the seller-authorizing PDF in this case; a downloaded verification PDF includes the warning. Multiple named alternatives are permitted; instructions naming no item produce no warning. This is a lexical review signal, not general semantic proof of intent.
+
+The [Nov 7 validation](LIVE_AGENT_VALIDATION.md) independently downloaded the evidence document from the URL returned by the disputes API. Its 9,322 bytes and SHA-256 matched the approval card exactly. This is a retrieval check, not an inference from a successful upload status.

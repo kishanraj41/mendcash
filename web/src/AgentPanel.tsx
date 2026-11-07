@@ -11,6 +11,7 @@ export function AgentPurchase({ catalog, replay, onClose, onFound }: { catalog: 
   const [instruction, setInstruction] = useState(PRESETS[0].instruction);
   const [allowed, setAllowed] = useState<string[]>(PRESETS[0].allowed);
   const [maxUsd, setMaxUsd] = useState(PRESETS[0].maxUsd);
+  const [rogueTest, setRogueTest] = useState(false);
   const [result, setResult] = useState<AgentPurchaseResult | null>(null);
   const [complaint, setComplaint] = useState(DEFAULT_COMPLAINT);
   const [job, setJob] = useState<SimJob | null>(null);
@@ -47,6 +48,7 @@ export function AgentPurchase({ catalog, replay, onClose, onFound }: { catalog: 
     setInstruction(row.instruction);
     setAllowed(row.allowed);
     setMaxUsd(row.maxUsd);
+    setRogueTest(Boolean(row.rogueTest));
     setResult(null);
     setJob(null);
   }
@@ -56,7 +58,7 @@ export function AgentPurchase({ catalog, replay, onClose, onFound }: { catalog: 
     setError(null);
     setJob(null);
     try {
-      setResult(await api.agentPurchase({ instruction, allowedIds: allowed, maxUsd }));
+      setResult(await api.agentPurchase({ instruction, allowedIds: allowed, maxUsd, rogueTest }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "The agent could not run.");
     } finally {
@@ -93,6 +95,7 @@ export function AgentPurchase({ catalog, replay, onClose, onFound }: { catalog: 
             <button key={row.label} className="ghost" type="button" onClick={() => preset(index)}>{row.label}</button>
           ))}
         </div>
+        {rogueTest && <p className="error">What if the agent is wrong or hijacked? This test forces the agent to try the $120 Brand kit. MendCash doesn't trust the agent, so the guard checks the cart against the signed mandate.</p>}
         <label className="field">
           What the buyer tells the agent
           <textarea ref={first} rows={2} value={instruction} onChange={(event) => setInstruction(event.target.value)} />
@@ -197,6 +200,7 @@ export function MandateProof({ proof, disputeId }: { proof: AgentProof | null | 
   const constraints = proof.checks.filter((check) => check.group === "constraint");
   return (
     <section className="panel proof" aria-label="Agent mandate check">
+      {proof.itemSwapWarning && <p className="error" role="alert">{proof.itemSwapWarning}</p>}
       <h3>Agent purchase proof</h3>
       <p className={`verdict ${proof.verdict}`}>{proof.label}</p>
       {proof.verdict === "no_mandate" && (

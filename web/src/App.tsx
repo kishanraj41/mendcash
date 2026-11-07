@@ -1,3 +1,4 @@
+import { disputeStatusLabel } from "../../src/services/status-label";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type CaseView, type Catalog, type DisputeRow, type InvoiceView, type Payload, type Session, type SimJob } from "./api";
 import { AgentPurchase, DecisionBanner, MandateProof, SandboxControls } from "./AgentPanel";
@@ -180,7 +181,7 @@ export function App() {
                 <span>{row.claimLabel || prettyReason(row.reason)}</span>
                 <span className="amt">${row.amount ?? "—"}</span>
                 <span className="snip">{row.snippet || "No buyer text"}</span>
-                <span className="meta">{row.status.replaceAll("_", " ")} · {countdownText(row.countdown)}</span>
+                <span className="meta">{disputeStatusLabel(row.status, row.outcome) || `${row.status.replaceAll("_", " ")} · ${countdownText(row.countdown)}`}</span>
               </button>
             ))}
           </div>
@@ -369,7 +370,7 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
         ))}
         <div className="figure">
           <div className="label">{view.countdown.simulated ? "Simulated deadline" : "Response deadline"}</div>
-          <div className="value" style={{ fontSize: 22 }}>{countdownText(view.countdown)}</div>
+          <div className="value" style={{ fontSize: 22 }}>{disputeStatusLabel(view.dispute.status, view.dispute.dispute_outcome?.outcome_code) || countdownText(view.countdown)}</div>
           <div className="src">seller_response_due_date · {view.records.disputeId}</div>
         </div>
       </div>

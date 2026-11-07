@@ -93,6 +93,7 @@ export async function mandateEvidencePdf(input: EvidencePdfInput): Promise<Uint8
     regular,
     10,
   );
+  if (proof.itemSwapWarning) w.text(`Human review required: ${proof.itemSwapWarning}`, bold, 11, rgb(0.55, 0.18, 0.16), 6);
   w.space(6);
   if (s) {
     w.text("What the buyer authorized (open mandates, signed by the buyer)", bold, 11, undefined, 4);

@@ -161,7 +161,7 @@ export function createApp(options: AppOptions = {}) {
       const allowedIds = Array.isArray(req.body?.allowedIds) ? req.body.allowedIds.map(String).slice(0, 10) : [];
       res.json(
         await desk.agentPurchase(
-          { instruction: String(req.body?.instruction || ""), allowedIds, maxUsd: String(req.body?.maxUsd || "") },
+          { instruction: String(req.body?.instruction || ""), allowedIds, maxUsd: String(req.body?.maxUsd || ""), rogueTest: req.body?.rogueTest === true },
           clientIp(req),
         ),
       );

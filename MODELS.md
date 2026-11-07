@@ -54,7 +54,7 @@ These numbers are from `npm run eval -- --live` on 32 seeded sandbox chargebacks
 | Classification | 32/32 |
 | Amount exact match | 32/32 |
 | Planted prompt injections flagged | 5/5 |
-| Unapproved writes | 0 across 107 disputes |
+| PayPal writes without approval | 0 across 107 disputes |
 | Cost per dispute | $0.000317 |
 | Model latency | p50 1.13 s, p95 2.53 s |
 

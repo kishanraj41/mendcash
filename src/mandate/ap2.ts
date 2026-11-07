@@ -1,3 +1,4 @@
+import { itemSwapWarning } from "./item-intent";
 import { decodeJws, sha256B64url, signJws, verifyJws } from "./jws";
 import { publicKeyFromJwk, type DemoKeys } from "./keys";
 
@@ -285,6 +286,7 @@ export type ProofSummary = {
 };
 
 export type AgentProof = {
+  itemSwapWarning?: string | null;
   verdict: ProofVerdict;
   label: string;
   transactionId: string | null;
@@ -315,6 +317,7 @@ export function verifyBundle(bundle: MandateBundle | null, keys: DemoKeys, recor
   const empty = (verdict: ProofVerdict, detail: string): AgentProof => ({
     verdict,
     label: VERDICT_LABEL[verdict],
+    itemSwapWarning: null,
     transactionId: customTxn,
     customId: record.customId,
     checks: [{ id: "paypal_binding", label: "PayPal order carries a mandate fingerprint", pass: false, detail, group: "integrity", source: "PayPal record" }],
@@ -408,6 +411,7 @@ export function verifyBundle(bundle: MandateBundle | null, keys: DemoKeys, recor
   return {
     verdict,
     label: VERDICT_LABEL[verdict],
+    itemSwapWarning: line ? itemSwapWarning(oc.mendcash_instruction || "", line.id) : null,
     transactionId: bundle.transactionId,
     customId: record.customId,
     checks,
