@@ -46,30 +46,22 @@ The same constraint code runs twice: as a guard **before** the agent may pay, an
 - **Neutral storage.** The merchant stores the bundle. The PayPal `custom_id` makes later substitution detectable, but it is not a third-party timestamp.
 - **PayPal's decision.** The PDF is evidence. PayPal and the card network decide the dispute. In the sandbox, `require-evidence` and `adjudicate` simulate that side only.
 
-## Live checks to run on the sandbox
+## Sandbox validation
 
-1. Create an agent order and `GET` it: `custom_id` is on the purchase unit and the capture.
-2. Dispute it with reason `4853`, then wait for `WAITING_FOR_SELLER_RESPONSE`.
-3. Send evidence: PayPal accepts the `evidence-file` part and the `documents` name.
-4. Check that `adjudicate` (`SELLER_FAVOR`) is accepted while the dispute is `UNDER_REVIEW` and PayPal lists the `adjudicate` link, that the `CUSTOMER.DISPUTE.RESOLVED` webhook arrives, and that **Recovered** rises.
+The loop was run end to end against the live PayPal sandbox on Nov 2–4, 2026.
 
-Results on Nov 2, 2026 (sandbox, dispute PP-R-KHC-10196083, $18.00, reason 4853): checks 1–3 passed, and PayPal stored the PDF byte for byte. `require-evidence` and `adjudicate` were refused with `ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE` until PayPal listed their links, which happened about 3.5 minutes after the seller's evidence landed. After that, both returned 200. After `adjudicate`, PayPal recorded an adjudication (`PAYOUT_TO_BUYER`, reason `REPRESENTED_BY_PAYPAL`), but the chargeback stayed `UNDER_REVIEW` / `UNDER_PAYPAL_REVIEW` for at least 23 minutes. Recovered rises live only once PayPal marks the dispute `RESOLVED` with a seller outcome. In replay, it rises at once.
+| Step | Result |
+|---|---|
+| Agent order created, then read back with `GET` | `custom_id` present on the purchase unit and the capture |
+| Chargeback with reason `4853` | Reached `WAITING_FOR_SELLER_RESPONSE` after about 4 minutes |
+| Evidence sent with the verification PDF | Accepted (200). PayPal stored the `evidence-file` part byte for byte |
+| `require-evidence` and `adjudicate` (`SELLER_FAVOR`) | Accepted (200) once PayPal listed those links, about 3.5 minutes after the evidence |
+| Accept claim (the fold case) | Recorded by PayPal as `ACCEPT_CLAIM`; MendCash counts it under **Refunded** |
 
-Follow-up on Nov 3, 2026 (live sandbox):
+Disputes used: PP-R-KHC-10196083 and PP-R-UGA-10196105 (contested, $18.00 each) and PP-R-IXY-10196084 (accepted, $18.00).
 
-- **PP-R-KHC-10196083**, re-fetched at 12:54 AM CST, about 8 hours after `adjudicate`: still `UNDER_REVIEW` / `UNDER_PAYPAL_REVIEW`, with no `dispute_outcome` and the same single adjudication record. It has not resolved, so Recovered has not moved.
-- **PP-R-UGA-10196105**, a fresh agent purchase ($18.00, order 38T30419EE002873V, capture 4BE141796A6814050), 4853 chargeback. Waiting for seller after about 4 minutes; Contest; evidence with the PDF approved (200). The approval response itself moved Submitted +$18.00 and Open stake −$18.00. PayPal listed `adjudicate` about 3.5 minutes later, and `adjudicate` `SELLER_FAVOR` returned 200. The case then showed PayPal reviewing the request instead of a win, and Recovered stayed at $0.00.
-- **PP-R-IXY-10196084**, the fold case (accept claim, $18.00): PayPal marks the seller entry `action_info.action = ACCEPT_CLAIM`. MendCash now counts it under **Refunded** ($18.00), not Submitted. It is still `UNDER_REVIEW` at PayPal.
+**How the sandbox decided.** In the sandbox, `adjudicate` `SELLER_FAVOR` is a request, not a ruling. For both contested card chargebacks PayPal wrote a `PAYOUT_TO_BUYER` adjudication record right after the call, and both resolved about 24 hours later as `RESOLVED_WITH_PAYOUT` (reason `REPRESENTED_BY_PAYPAL`), with $18.00 refunded to the buyer. MendCash counted this correctly: **Recovered** counts only seller outcomes, so it stayed at $0.00, and both disputes left Open stake. The live UI says PayPal is reviewing the request rather than promising a win.
 
-How Recovered moves live: the open case re-reads the dispute every 8 seconds and the inbox every 12. When a list row turns `RESOLVED`, MendCash fetches the detail (the list has no outcome) before it moves any counter. A `CUSTOMER.DISPUTE.RESOLVED` webhook does the same when `PAYPAL_WEBHOOK_ID` is set. This path is covered by a fixture test (`src/services/counters.test.ts`). The resolve path ran live (below), but only with a buyer outcome, so a live rise in Recovered has not been seen.
+**Where Recovered is shown.** Because the sandbox resolves these test chargebacks for the buyer, a rising Recovered counter is demonstrated in replay mode (the hero recording and the eval). The resolve path itself ran live, and the seller-outcome case is covered by a fixture test ([`src/services/counters.test.ts`](../src/services/counters.test.ts)).
 
-Outcome (Nov 3–4, 2026, live sandbox): both contested chargebacks resolved about 24 hours after `adjudicate` `SELLER_FAVOR` returned 200, and **both went to the buyer**:
-
-- **PP-R-KHC-10196083**: `RESOLVED` on Nov 3 at 10:53 PM CST, `outcome_code` `RESOLVED_WITH_PAYOUT` (reason `REPRESENTED_BY_PAYPAL`), $18.00 refunded to the buyer.
-- **PP-R-UGA-10196105**: `RESOLVED` on Nov 4 at 12:53 AM CST, `RESOLVED_WITH_PAYOUT`, $18.00 refunded to the buyer.
-
-Caveats:
-
-- In the sandbox, `adjudicate` `SELLER_FAVOR` is a request. It does not decide the case. For these card chargebacks PayPal paid out the buyer anyway, which matches the `PAYOUT_TO_BUYER` adjudication record it wrote right after the call.
-- MendCash counted both correctly: Recovered counts only seller outcomes, so it stayed at $0.00 and both moved out of Open stake.
-- **Recovered rising is demonstrated in replay only** (the hero GIF and the eval). The live UI now says PayPal *accepted* the "seller wins" request and that the outcome is not guaranteed.
+**How status updates.** An open case re-reads the dispute every 8 seconds and the inbox every 12. When a row turns `RESOLVED`, MendCash fetches the dispute detail (the list has no outcome) before it moves any counter. A `CUSTOMER.DISPUTE.RESOLVED` webhook does the same when `PAYPAL_WEBHOOK_ID` is set.
