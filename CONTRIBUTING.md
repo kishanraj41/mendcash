@@ -9,7 +9,7 @@ npm ci
 MENDCASH_MODE=replay npm run dev
 ```
 
-## Before you open a pull request
+## Before you submit a change
 
 ```bash
 npm run typecheck

@@ -2,7 +2,7 @@
 
 All comparison runs used Nebius Token Factory (`https://api.tokenfactory.nebius.com/v1`, OpenAI-compatible) on **Oct 30, 2026**. Prices below are from `/v1/models?verbose=true` that day.
 
-This is synthetic, PayPal-shaped data with a small sample (3–8 runs per model). It is not a benchmark. A dispute-specific re-run is planned and should be appended here.
+This is synthetic, PayPal-shaped data with a small sample (3–8 runs per model). It is not a benchmark. A dispute-specific comparison is on the roadmap.
 
 MendCash reads model ids and the base URL from the environment (`AGENT_MODEL`, `ROUTER_MODEL`, `FALLBACK_MODEL`, `NEBIUS_BASE_URL`). The defaults are the three rows in the choice section. The process refuses to start if any of them is a Qwen3-235B id.
 
@@ -45,7 +45,7 @@ MendCash reads model ids and the base URL from the environment (`AGENT_MODEL`, `
 
 The router’s per-token price on Nebius, confirmed 31 Oct 2026, is $0.10 / $0.30 per 1M tokens. Override it with `ROUTER_PRICE_IN_PER_M` and `ROUTER_PRICE_OUT_PER_M`.
 
-## MendCash dispute desk, live run 31 Oct 2026, commit a09c03f
+## MendCash dispute desk, live run Oct 31, 2026
 
 These numbers are from `npm run eval -- --live` on 32 seeded sandbox chargebacks, and from the running app on that sandbox account. They are not the October 30 selection task above.
 
@@ -58,4 +58,4 @@ These numbers are from `npm run eval -- --live` on 32 seeded sandbox chargebacks
 | Cost per dispute | $0.000317 |
 | Model latency | p50 1.13 s, p95 2.53 s |
 
-`npm run eval` without `--live` still prices a fixture token mix (12,000 in / 1,334 out). That fixture cost is about $0.0052 and is not the live cost. The 9.2–15 s column above is the October 30 selection task.
+`npm run eval` without `--live` prices a fixture token mix (12,000 in / 1,334 out). That fixture cost is about $0.0052 and is not the live cost. The 9.2–15 s column above is the October 30 selection task.
