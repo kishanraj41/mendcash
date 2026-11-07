@@ -167,6 +167,8 @@ p { margin: 0; }
   font-size: 12px;
   line-height: 1.45;
   max-height: 280px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .path { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; color: var(--muted); margin-bottom: 8px; overflow-wrap: anywhere; }
 .error { color: var(--clay); background: var(--clay-bg); border-radius: 10px; padding: 8px 10px; margin: 8px 0; }
@@ -237,7 +239,7 @@ p { margin: 0; }
 .proof-summary dd { margin: 0; overflow-wrap: anywhere; }
 .proof .links { display: flex; gap: 14px; flex-wrap: wrap; }
 .checks { list-style: none; margin: 0; padding: 0; font-size: 14px; }
-.checks li { margin: 4px 0; padding-left: 22px; position: relative; overflow-wrap: anywhere; }
+.checks li { margin: 4px 0; padding-left: 22px; position: relative; overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
 .checks li::before { position: absolute; left: 0; font-weight: 700; }
 .checks li.pass::before { content: "✓"; color: var(--forest); }
 .checks li.fail::before { content: "✕"; color: var(--clay); }
@@ -254,3 +256,7 @@ fieldset.field { border: 1px solid var(--line); border-radius: 10px; padding: 8p
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
+
+/* Long hashes and ids wrap inside their box instead of running off it. */
+.hash { display: block; font-family: "IBM Plex Mono", ui-monospace, monospace; overflow-wrap: anywhere; word-break: break-all; }
+.path, .mono, .checks .meta { overflow-wrap: anywhere; }
