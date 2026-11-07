@@ -6,7 +6,7 @@ export type AgentPick = {
   itemId: string;
   quantity: number;
   reason: string;
-  source: "model" | "rules";
+  source: "model" | "rules" | "simulated";
   model: string;
   usage: TokenUsage;
   latencyMs: number;
@@ -62,7 +62,7 @@ export async function pickWithModel(
   const item = input.catalog.find((row) => row.id === parsed.item_id);
   if (!item) {
     const fallback = pickWithRules(input.instruction, input.catalog, input.allowedIds);
-    return { ...fallback, reason: `Model returned no catalog item; rules picked. ${fallback.reason}`, usage: result.usage, latencyMs: result.latencyMs };
+    return { ...fallback, model: "rules-fallback", reason: `Rules fallback: model returned no usable catalog item. ${fallback.reason}`, usage: result.usage, latencyMs: result.latencyMs };
   }
   const quantity = typeof parsed.quantity === "number" && Number.isInteger(parsed.quantity) && parsed.quantity > 0 ? parsed.quantity : 1;
   return {

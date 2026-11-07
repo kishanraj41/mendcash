@@ -36,7 +36,7 @@ describe("agent mandates", () => {
 
   it("gives each planted agent dispute the expected verdict, decision, and agent flag", async () => {
     const desk = new Desk(replayConfig(), NOW);
-    assert.equal(cases.length, 6);
+    assert.equal(cases.length, 7);
     for (const row of cases) {
       const view = (await desk.getCase(row.expected.disputeId, "127.0.0.1")) as {
         agentProof: AgentProof | null;

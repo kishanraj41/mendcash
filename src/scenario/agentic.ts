@@ -56,6 +56,12 @@ const SPECS: Spec[] = [
     text: "My AI bot bought these stickers, not me. They also look nothing like the photo.", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED", code: "4853",
     tracking: true, noMandate: true, expect: { verdict: "no_mandate", decision: "contest" },
   },
+  {
+    itemId: "logo-pack", allowed: ["logo-pack", "brand-kit"], maxUsd: "150.00", instruction: "Buy the brand kit for the launch",
+    text: "My AI shopping assistant bought the wrong item.", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED", code: "4853",
+    tracking: false, expect: { verdict: "authorized", decision: "review" },
+  },
+
 ];
 
 const ISSUED = Date.parse("2026-10-30T15:00:00.000Z") / 1000;
@@ -67,7 +73,7 @@ function usd(value: string) {
   return { currency_code: "USD", value: centsToMoney(moneyToCents(value)) };
 }
 
-/** Six agent-purchase disputes: two authorized, two outside the mandate, one tampered record, one with no mandate. */
+/** Seven cases: the original six plus an in-mandate item swap requiring human judgment. */
 export function buildAgenticScenario(keys: DemoKeys): AgenticCase[] {
   return SPECS.map((spec, index) => {
     const n = String(index + 1).padStart(4, "0");
@@ -201,7 +207,7 @@ export function buildAgenticScenario(keys: DemoKeys): AgenticCase[] {
       extensions: { mendcash_simulated_deadline: true, mendcash_order_id: orderId },
     };
     return {
-      expected: { disputeId, verdict: spec.expect.verdict, decision: spec.expect.decision, agentClaim: true, pdf: spec.expect.verdict === "authorized" },
+      expected: { disputeId, verdict: spec.expect.verdict, decision: spec.expect.decision, agentClaim: true, pdf: spec.expect.verdict === "authorized" && spec.expect.decision !== "review" },
       dispute,
       order,
       bundle,

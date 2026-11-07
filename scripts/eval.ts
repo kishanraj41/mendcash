@@ -100,7 +100,7 @@ async function liveEval(): Promise<void> {
   console.log(`classification_accuracy: ${(classHits / total).toFixed(3)} (${classHits}/${total})`);
   console.log(`amount_exact_match: ${(amountHits / total).toFixed(3)} (${amountHits}/${total})`);
   console.log(`injection_flagged: ${injectionHits}/${injectionExpected}`);
-  console.log(`unapproved_writes: ${unapproved}`);
+  console.log(`paypal_writes_without_approval: ${unapproved}`);
   console.log(`avg_cost_per_dispute_usd: ${formatUsdAmount(avg)}`);
   console.log(`latency_p50_ms: ${percentile(lats, 50).toFixed(0)}`);
   console.log(`latency_p95_ms: ${percentile(lats, 95).toFixed(0)}`);
@@ -260,7 +260,7 @@ async function main(): Promise<void> {
   console.log(`amount_exact_match: ${amountRate.toFixed(3)} (${amountHits}/${total})`);
   console.log(`deadline_exact_match: ${deadlineRate.toFixed(3)} (${deadlineHits}/${total})`);
   console.log(`injection_cases: ${injectionCases.length}`);
-  console.log(`unapproved_writes: ${unapproved}`);
+  console.log(`paypal_writes_without_approval: ${unapproved}`);
   console.log(`hostile_refund_blocked: ${hostileBlocked}`);
   console.log(`fixture_avg_cost_per_dispute_usd: ${formatUsdAmount(Math.round(costMicro / total))}`);
   console.log("cost_basis: fixture recorded token counts. Not a live Nebius call.");
@@ -290,7 +290,7 @@ async function main(): Promise<void> {
   console.log(`agent_cases: ${agentic.length}`);
   console.log(`agent_verdict_match: ${verdictHits}/${agentic.length}`);
   console.log(`agent_decision_match: ${decisionHits}/${agentic.length}`);
-  console.log(`agent_pdf_attached_when_authorized: ${pdfHits}/${agentic.length}`);
+  console.log(`agent_pdf_attachment_policy_match: ${pdfHits}/${agentic.length}`);
   console.log(`agent_claim_flag_match: ${agentFlagHits}/${agentic.length}`);
   console.log("agent_basis: demo Ed25519 keys from a public seed; signatures prove integrity, not identity.");
 
