@@ -10,7 +10,7 @@ AI reads the messy text. Code does the math. A human approves the exact API call
 
 [![CI](https://github.com/kishanraj41/mendcash/actions/workflows/ci.yml/badge.svg)](https://github.com/kishanraj41/mendcash/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-1b4334.svg)](LICENSE) [![Node 22+](https://img.shields.io/badge/node-%E2%89%A522-339933.svg?logo=node.js&logoColor=white)](package.json) [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6.svg?logo=typescript&logoColor=white)](tsconfig.json) [![PayPal sandbox](https://img.shields.io/badge/PayPal-sandbox-003087.svg?logo=paypal&logoColor=white)](https://developer.paypal.com/tools/sandbox/) [![PayPal Agent Toolkit](https://img.shields.io/badge/PayPal-Agent%20Toolkit-0070e0.svg?logo=paypal&logoColor=white)](https://www.npmjs.com/package/@paypal/agent-toolkit) [![Open-weight models](https://img.shields.io/badge/models-open--weight-8a4b12.svg)](MODELS.md)
 
-**[▶ Live demo](https://mendcash.onrender.com)** &nbsp;·&nbsp; <!-- DEMO_VIDEO: replace this comment with  **[🎬 Demo video](https://youtu.be/...)** &nbsp;·&nbsp;  --> [Quick start](#quick-start) &nbsp;·&nbsp; [How it works](#how-it-works) &nbsp;·&nbsp; [Results](#results) &nbsp;·&nbsp; [Docs](#documentation)
+**[▶ Live demo](https://mendcash.onrender.com)** &nbsp;·&nbsp; **[🎬 Demo video](https://youtu.be/YjJ32sA3waM)** &nbsp;·&nbsp; [Quick start](#quick-start) &nbsp;·&nbsp; [How it works](#how-it-works) &nbsp;·&nbsp; [Results](#results) &nbsp;·&nbsp; [Docs](#documentation)
 
 <br>
 
