@@ -454,7 +454,8 @@ function CasePane({ view, onChanged }: { view: CaseView; onChanged: () => void }
               <pre className="code">{JSON.stringify(payload.body, null, 2)}</pre>
               {payload.files?.map((file) => (
                 <p className="path mono" key={file.sha256}>
-                  + file part "{file.field}": {file.name} · {file.contentType} · {file.size} bytes · sha256 {file.sha256.slice(0, 16)}…
+                  + file part "{file.field}": {file.name} · {file.contentType} · {file.size} bytes
+                  <span className="hash">sha256 {file.sha256}</span>
                 </p>
               ))}
             </>
